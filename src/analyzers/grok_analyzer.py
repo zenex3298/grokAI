@@ -31,17 +31,14 @@ def analyze_with_grok(data, vendor_name):
         For each entry include: Customer Name, Website URL
         """
         
-        # Call Grok API
-        # Note: This is a placeholder. Actual implementation will depend on Grok's API specifications
+        # Call Groq API with proper authentication
         headers = {
             'Authorization': f'Bearer {api_key}',
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
         }
         
-        payload = {
-            'prompt': prompt,
-            'max_tokens': 1000
-        }
+        # Create payload directly in the request
         
         response = requests.post(
             'https://api.groq.com/openai/v1/chat/completions',  # Correct Groq API endpoint
@@ -57,7 +54,13 @@ def analyze_with_grok(data, vendor_name):
         )
         
         if response.status_code != 200:
-            logger.error(f"Grok API error: {response.status_code}")
+            error_response = None
+            try:
+                error_response = response.json()
+            except:
+                error_response = response.text
+
+            logger.error(f"Groq API error: {response.status_code} - {error_response}")
             return process_data_without_grok(data, vendor_name)
         
         # Process Groq's response
