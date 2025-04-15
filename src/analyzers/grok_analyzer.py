@@ -44,18 +44,25 @@ def analyze_with_grok(data, vendor_name):
         }
         
         response = requests.post(
-            'https://api.grok.ai/v1/completions',  # Placeholder URL
+            'https://api.groq.com/openai/v1/chat/completions',  # Correct Groq API endpoint
             headers=headers,
-            json=payload
+            json={
+                'model': 'mixtral-8x7b-32768',  # Using Mixtral model
+                'messages': [
+                    {'role': 'system', 'content': 'You are a helpful assistant that identifies unique customer names and their website URLs from provided data.'},
+                    {'role': 'user', 'content': prompt}
+                ],
+                'max_tokens': 1000
+            }
         )
         
         if response.status_code != 200:
             logger.error(f"Grok API error: {response.status_code}")
             return process_data_without_grok(data, vendor_name)
         
-        # Process Grok's response
+        # Process Groq's response
         grok_response = response.json()
-        generated_text = grok_response.get('choices', [{}])[0].get('text', '')
+        generated_text = grok_response.get('choices', [{}])[0].get('message', {}).get('content', '')
         
         # Parse the generated text into structured data
         return parse_grok_response(generated_text, vendor_name)
