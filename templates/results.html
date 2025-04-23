@@ -6,6 +6,7 @@
     <title>Customer Intelligence Results - {{ vendor_name }}</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    {# We don't need meta refresh anymore since we're using JavaScript polling #}
 </head>
 <body>
     <div class="container">
@@ -18,10 +19,41 @@
                             <a href="/" class="btn btn-light btn-sm">New Search</a>
                         </div>
                     </div>
+                    
+                    {% if polling %}
+                    <!-- Loading state - shown while job is running -->
+                    <div class="card-body" id="loading-state">
+                        <h2 class="h4 mb-3">Analyzing {{ vendor_name }}...</h2>
+                        <div class="progress mb-3">
+                            <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                        <p id="progress-message">We're analyzing data from multiple sources to identify customers of {{ vendor_name }}.</p>
+                        <div id="status-message" class="alert alert-info">
+                            <p><strong>Status:</strong> <span id="job-status">Initializing...</span></p>
+                            <p><span id="elapsed-time">00:00</span></p>
+                        </div>
+                        
+                        <!-- Partial results section (shown once we have some data) -->
+                        <div id="partial-results-section" style="display: none;">
+                            <h4 class="mt-4">Preliminary Results</h4>
+                            <p class="text-muted small">These are initial results that will be further analyzed and refined.</p>
+                            <div id="partial-results-container"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Results state - hidden initially, shown when results arrive -->
+                    <div class="card-body" id="results-state" style="display: none;">
+                        <h2 class="h4 mb-3">Customers of {{ vendor_name }}</h2>
+                        <div id="results-container">
+                            <!-- Results will be loaded here dynamically -->
+                        </div>
+                    </div>
+                    {% else %}
+                    <!-- Static results (not polling) -->
                     <div class="card-body">
                         <h2 class="h4 mb-3">Customers of {{ vendor_name }}</h2>
                         
-                        {% if results|length > 0 %}
+                        {% if results and results|length > 0 %}
                         <div class="table-responsive">
                             <table class="table table-striped table-hover">
                                 <thead>
@@ -63,6 +95,8 @@
                         </div>
                         {% endif %}
                     </div>
+                    {% endif %}
+                    
                     <div class="card-footer text-center">
                         <a href="/" class="btn btn-primary">Search Another Vendor</a>
                     </div>
@@ -73,5 +107,163 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+    
+    {% if polling %}
+    <script>
+        // JavaScript for polling job status
+        const jobId = "{{ job_id }}";
+        const vendorName = "{{ vendor_name }}";
+        const statusElement = document.getElementById('job-status');
+        const loadingState = document.getElementById('loading-state');
+        const resultsState = document.getElementById('results-state');
+        const resultsContainer = document.getElementById('results-container');
+        const progressBar = document.getElementById('progress-bar');
+        const progressMessage = document.getElementById('progress-message');
+        const elapsedTimeDisplay = document.getElementById('elapsed-time');
+        const partialResultsSection = document.getElementById('partial-results-section');
+        const partialResultsContainer = document.getElementById('partial-results-container');
+        
+        // Start time for elapsed time tracking
+        const startTime = new Date();
+        
+        // Format time as mm:ss
+        function formatElapsedTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+        
+        // Poll for job status every 2 seconds
+        const pollInterval = setInterval(() => {
+            fetch(`/job_status/${jobId}`)
+                .then(response => response.json())
+                .then(data => {
+                    // Update status
+                    statusElement.textContent = data.status === 'running' 
+                        ? data.progress.message || 'Processing...' 
+                        : data.status;
+                    
+                    // Update progress bar and message if we have progress data
+                    if (data.progress) {
+                        progressBar.style.width = `${data.progress.step}%`;
+                        progressBar.setAttribute('aria-valuenow', data.progress.step);
+                        progressMessage.textContent = data.progress.message || '';
+                    }
+                    
+                    // Update elapsed time
+                    let elapsedSeconds;
+                    if (data.elapsed_time) {
+                        elapsedSeconds = data.elapsed_time;
+                    } else if (data.duration) {
+                        elapsedSeconds = data.duration;
+                    } else {
+                        elapsedSeconds = (new Date() - startTime) / 1000;
+                    }
+                    elapsedTimeDisplay.textContent = `Time elapsed: ${formatElapsedTime(elapsedSeconds)}`;
+                    
+                    // Show partial results if available
+                    if (data.partial_results && data.partial_results.length > 0 && data.status === 'running') {
+                        partialResultsSection.style.display = 'block';
+                        renderResultsTable(data.partial_results, partialResultsContainer, true);
+                    }
+                    
+                    if (data.status === 'completed') {
+                        clearInterval(pollInterval);
+                        // Show the results
+                        renderResults(data.results);
+                        loadingState.style.display = 'none';
+                        resultsState.style.display = 'block';
+                        
+                        // Add completion info
+                        if (data.duration) {
+                            const completionInfo = document.createElement('div');
+                            completionInfo.className = 'alert alert-success mt-3';
+                            completionInfo.innerHTML = `<p><strong>Analysis completed in ${formatElapsedTime(data.duration)}</strong></p>`;
+                            resultsContainer.appendChild(completionInfo);
+                        }
+                    } 
+                    else if (data.status === 'failed') {
+                        clearInterval(pollInterval);
+                        // Show error message
+                        document.getElementById('status-message').className = 'alert alert-danger';
+                        statusElement.textContent = 'Error: ' + (data.error || 'Unknown error occurred');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error polling job status:', error);
+                    statusElement.textContent = 'Error checking status';
+                });
+        }, 2000);
+        
+        // Function to render results table (shared between partial and final results)
+        function renderResultsTable(results, container, isPartial = false) {
+            if (results && results.length > 0) {
+                // Create table for results
+                let tableHtml = `
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover">
+                        <thead>
+                            <tr>
+                                <th>Competitor</th>
+                                <th>Customer Name</th>
+                                <th>Customer URL</th>
+                            </tr>
+                        </thead>
+                        <tbody>`;
+                
+                // Add each result row
+                results.forEach(result => {
+                    tableHtml += `
+                        <tr>
+                            <td>${result.competitor}</td>
+                            <td>${result.customer_name}</td>
+                            <td>`;
+                    
+                    if (result.customer_url) {
+                        tableHtml += `<a href="https://${result.customer_url}" target="_blank">${result.customer_url}</a>`;
+                    } else {
+                        tableHtml += `-`;
+                    }
+                    
+                    tableHtml += `</td>
+                        </tr>`;
+                });
+                
+                tableHtml += `
+                        </tbody>
+                    </table>
+                </div>`;
+                
+                if (!isPartial) {
+                    tableHtml += `
+                    <div class="text-muted small mt-3">
+                        <p><strong>Note:</strong> This data is derived from public information sources and may not be complete. 
+                        Some customers may be inferred based on available information. URLs are estimated when not explicitly provided.</p>
+                    </div>`;
+                }
+                
+                // Add the table to the container
+                container.innerHTML = tableHtml;
+            } else {
+                // No results found
+                container.innerHTML = `
+                <div class="alert alert-${isPartial ? 'info' : 'warning'}">
+                    <p>${isPartial ? 'No preliminary results yet...' : 'No customer data found for ' + vendorName + '.'}</p>
+                    ${!isPartial ? `
+                    <ul>
+                        <li>Check the spelling of the vendor name</li>
+                        <li>Try a more well-known vendor</li>
+                        <li>The vendor may not have publicly listed customers</li>
+                    </ul>` : ''}
+                </div>`;
+            }
+        }
+        
+        // Function to render final results
+        function renderResults(results) {
+            renderResultsTable(results, resultsContainer);
+        }
+    </script>
+    {% endif %}
 </body>
 </html>
