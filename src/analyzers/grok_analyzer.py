@@ -1,11 +1,15 @@
 import os
 import json
-import logging
 import requests
 import time
+import copy
 from urllib.parse import urlparse
+from datetime import datetime
 
-logger = logging.getLogger(__name__)
+from src.utils.logger import get_logger, LogComponent, set_context, log_data_metrics, log_function_call
+
+# Get a logger specifically for the analyzer component
+logger = get_logger(LogComponent.GROK)
 
 def analyze_with_grok(data, vendor_name, progress_callback=None):
     """
