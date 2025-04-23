@@ -33,6 +33,51 @@
                             <p><span id="elapsed-time">00:00</span></p>
                         </div>
                         
+                        <!-- Validation status (shown during validation) -->
+                        <div id="validation-section" style="display: none;">
+                            <h4 class="mt-4">Data Validation</h4>
+                            <p>Ensuring data quality before processing...</p>
+                            <div class="row">
+                                <div class="col-md-3">
+                                    <div class="card mb-2">
+                                        <div class="card-body p-2 text-center">
+                                            <h6>Vendor Site</h6>
+                                            <span id="vendor-validation-badge" class="badge bg-secondary">Pending</span>
+                                            <div class="small mt-1"><span id="vendor-validation-count">-</span></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="card mb-2">
+                                        <div class="card-body p-2 text-center">
+                                            <h6>Featured Customers</h6>
+                                            <span id="featured-validation-badge" class="badge bg-secondary">Pending</span>
+                                            <div class="small mt-1"><span id="featured-validation-count">-</span></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="card mb-2">
+                                        <div class="card-body p-2 text-center">
+                                            <h6>Search Engines</h6>
+                                            <span id="search-validation-badge" class="badge bg-secondary">Pending</span>
+                                            <div class="small mt-1"><span id="search-validation-count">-</span></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="card mb-2">
+                                        <div class="card-body p-2 text-center">
+                                            <h6>Combined Data</h6>
+                                            <span id="combined-validation-badge" class="badge bg-secondary">Pending</span>
+                                            <div class="small mt-1"><span id="combined-validation-count">-</span></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div id="validation-error" class="alert alert-warning mt-2" style="display: none;"></div>
+                        </div>
+                        
                         <!-- Partial results section (shown once we have some data) -->
                         <div id="partial-results-section" style="display: none;">
                             <h4 class="mt-4">Preliminary Results</h4>
@@ -161,8 +206,39 @@
                     }
                     elapsedTimeDisplay.textContent = `Time elapsed: ${formatElapsedTime(elapsedSeconds)}`;
                     
+                    // Process validation status if available
+                    const validationSection = document.getElementById('validation-section');
+                    
+                    if (data.validation_status) {
+                        validationSection.style.display = 'block';
+                        
+                        // Update each validation component
+                        updateValidationStatus('vendor_site', data.validation_status.vendor_site);
+                        updateValidationStatus('featured_customers', data.validation_status.featured_customers);
+                        updateValidationStatus('search_engines', data.validation_status.search_engines);
+                        updateValidationStatus('combined', data.validation_status.combined);
+                        
+                        // Show validation error if job failed due to validation
+                        if (data.status === 'failed' && data.error_details && 
+                            (data.error_details.type === 'validation_error' || 
+                             data.error_details.type === 'worker_validation_error')) {
+                            
+                            const validationError = document.getElementById('validation-error');
+                            validationError.style.display = 'block';
+                            validationError.innerHTML = `
+                                <p><strong>Validation Error:</strong> ${data.error}</p>
+                                ${data.error_details.reasons ? 
+                                  `<ul>${data.error_details.reasons.map(r => `<li>${r}</li>`).join('')}</ul>` : ''}
+                                <p>Please try a different vendor name or check your spelling.</p>
+                            `;
+                        }
+                    } else {
+                        validationSection.style.display = 'none';
+                    }
+                    
                     // Show partial results if available
-                    if (data.partial_results && data.partial_results.length > 0 && data.status === 'running') {
+                    if (data.partial_results && data.partial_results.length > 0 && 
+                        (data.status === 'running' || data.status === 'completed_with_errors')) {
                         partialResultsSection.style.display = 'block';
                         renderResultsTable(data.partial_results, partialResultsContainer, true);
                     }
@@ -262,6 +338,45 @@
         // Function to render final results
         function renderResults(results) {
             renderResultsTable(results, resultsContainer);
+        }
+        
+        // Function to update validation status indicators
+        function updateValidationStatus(type, status) {
+            if (!status) return;
+            
+            // Map component names to element IDs
+            const componentMap = {
+                'vendor_site': 'vendor',
+                'featured_customers': 'featured',
+                'search_engines': 'search',
+                'combined': 'combined'
+            };
+            
+            const prefix = componentMap[type] || type;
+            const badge = document.getElementById(`${prefix}-validation-badge`);
+            const count = document.getElementById(`${prefix}-validation-count`);
+            
+            if (badge && status) {
+                // Update badge color based on status
+                badge.className = 'badge ';
+                if (status.status === 'valid') {
+                    badge.className += 'bg-success';
+                    badge.textContent = 'Valid';
+                } else if (status.status === 'invalid') {
+                    badge.className += 'bg-danger';
+                    badge.textContent = 'Invalid';
+                } else if (status.status === 'pending') {
+                    badge.className += 'bg-secondary';
+                    badge.textContent = 'Pending';
+                } else {
+                    badge.className += 'bg-warning';
+                    badge.textContent = status.status || 'Unknown';
+                }
+            }
+            
+            if (count && status.count !== undefined) {
+                count.textContent = `${status.count}/${status.original_count || status.count} items`;
+            }
         }
     </script>
     {% endif %}
