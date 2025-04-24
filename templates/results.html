@@ -109,7 +109,7 @@
                                     <div class="progress mt-2" style="height: 6px;">
                                         <div id="completion-progress" class="progress-bar bg-success" style="width: 0%"></div>
                                     </div>
-                                    <div id="processing-message" class="text-center text-muted small mt-1"></div>
+                                    <!-- Progress bar only, no message displayed -->
                                 </div>
                             </div>
                         </div>
@@ -354,15 +354,10 @@
                             const targetCount = data.metrics.target_count || 20;
                             const percent = Math.min(100, Math.round((uniqueCount / targetCount) * 100));
                             document.getElementById('completion-progress').style.width = `${percent}%`;
-                            document.getElementById('processing-message').textContent = 
-                                `Found ${uniqueCount}/${targetCount} target companies`;
+                            // Keep progress bar but don't show text message about counts
                         }
                         
-                        // If early exit occurred, show message
-                        if (data.metrics.early_exit) {
-                            document.getElementById('processing-message').innerHTML = 
-                                '<span class="text-success">✓ Target number of companies found! Analysis completed early.</span>';
-                        }
+                        // Early exit doesn't show a message anymore
                         
                         // Update status indicator with current processing status and page
                         const statusIndicator = document.getElementById('status-indicator');
