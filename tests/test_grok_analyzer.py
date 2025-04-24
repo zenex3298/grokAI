@@ -69,8 +69,15 @@ def extract_text_from_html(html_content):
     
     return text
 
-def extract_companies_with_grok(text_content, page_url, vendor_name):
-    """Use Grok to extract company names from page text."""
+def extract_companies_with_grok(text_content, page_url, vendor_name, debug_mode=False):
+    """Use Grok to extract company names from page text.
+    
+    Args:
+        text_content: The text content to analyze
+        page_url: The URL of the page
+        vendor_name: The name of the vendor
+        debug_mode: If True, prints extra debug information
+    """
     # Get API key
     api_key = os.environ.get('GROK_API_KEY')
     
@@ -111,6 +118,8 @@ def extract_companies_with_grok(text_content, page_url, vendor_name):
 
     Only include companies that you believe are actual customers with at least 60% confidence.
     Do not include {vendor_name} itself or generic terms.
+    
+    IMPORTANT: Only return up to 10 of the companies you are MOST confident about. Quality over quantity.
     
     You MUST take at least 45-60 seconds to thoroughly process this content before responding.
     Provide a thorough analysis as your response is critical for business intelligence.
@@ -193,12 +202,16 @@ def extract_companies_with_grok(text_content, page_url, vendor_name):
                 # If we can't find brackets, try parsing the whole response
                 companies_data = json.loads(generated_text)
                 
+            if debug_mode:
+                print(f"\nFound {len(companies_data)} raw company entries from Grok")
+                
             # Format the extracted companies
             companies = []
             for company in companies_data:
                 if isinstance(company, dict) and 'company_name' in company:
                     name = company['company_name']
                     confidence = company.get('confidence', 0.7)  # Default confidence
+                    reason = company.get('reason', 'Extracted from page content')  # Get reason if available
                     
                     if confidence >= 0.6:  # Only include companies with sufficient confidence
                         # Generate domain from company name
@@ -208,10 +221,21 @@ def extract_companies_with_grok(text_content, page_url, vendor_name):
                             'name': name,
                             'url': domain,
                             'source': f"Grok extraction from {page_url}",
-                            'confidence': confidence
+                            'confidence': confidence,
+                            'reason': reason
                         })
             
             print(f"Grok extracted {len(companies)} companies from {page_url}")
+            
+            if debug_mode and len(companies) > 0:
+                print("\nTop companies by confidence:")
+                # Sort by confidence and take top 3 for quick preview
+                top_companies = sorted(companies, key=lambda x: x.get('confidence', 0), reverse=True)[:3]
+                for i, company in enumerate(top_companies, 1):
+                    confidence = company.get('confidence', 'N/A')
+                    confidence_str = f"{confidence:.2f}" if isinstance(confidence, float) else confidence
+                    print(f"  {i}. {company['name']} (Confidence: {confidence_str})")
+            
             return companies
             
         except json.JSONDecodeError as e:
@@ -231,14 +255,28 @@ def main():
         sys.exit(1)
     else:
         print(f"Using GROK_API_KEY: {grok_api_key[:5]}...{grok_api_key[-5:]}")
+        
+    # Get limit argument if provided
+    debug_limit = 5  # Default limit for debugging
     
     # Get URL from command line
     if len(sys.argv) < 2:
-        print("Usage: python test_grok_analyzer.py <URL> [vendor_name]")
+        print("Usage: python test_grok_analyzer.py <URL> [vendor_name] [limit]")
+        print("  limit: Optional - number of results to display (default: 5)")
         sys.exit(1)
     
     url = sys.argv[1]
     vendor_name = sys.argv[2] if len(sys.argv) > 2 else "Company"
+    
+    # Check if limit is provided as the third argument
+    if len(sys.argv) > 3:
+        try:
+            debug_limit = int(sys.argv[3])
+            print(f"Result limit set to: {debug_limit}")
+        except ValueError:
+            print(f"Invalid limit value: {sys.argv[3]}. Using default: {debug_limit}")
+    else:
+        print(f"Using default result limit: {debug_limit}")
     
     print(f"\nAnalyzing URL: {url}")
     print(f"Vendor name: {vendor_name}")
@@ -277,14 +315,28 @@ def main():
         print("-" * 50)
         
         # Process with Grok
-        results = extract_companies_with_grok(text_content, url, vendor_name)
+        # Pass True for debug_mode to enable extra debug output
+        results = extract_companies_with_grok(text_content, url, vendor_name, debug_mode=True)
         
-        # Display results
+        # Display limited results
         print("\nResults:")
         print("-" * 50)
         if results:
-            for i, company in enumerate(results, 1):
-                print(f"{i}. {company['name']} (Confidence: {company.get('confidence', 'N/A'):.2f})")
+            print(f"Found {len(results)} companies, displaying top {min(debug_limit, len(results))} by confidence:")
+            
+            # Sort by confidence and take top N
+            sorted_results = sorted(results, key=lambda x: x.get('confidence', 0), reverse=True)
+            limited_results = sorted_results[:debug_limit]
+            
+            for i, company in enumerate(limited_results, 1):
+                confidence = company.get('confidence', 'N/A')
+                confidence_str = f"{confidence:.2f}" if isinstance(confidence, float) else confidence
+                reason = company.get('reason', 'No reason provided')
+                
+                print(f"{i}. {company['name']} (Confidence: {confidence_str})")
+                print(f"   Reason: {reason}")
+                print(f"   URL: {company.get('url', 'N/A')}")
+                print()
         else:
             print("No companies found")
         
