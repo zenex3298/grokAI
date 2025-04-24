@@ -11,7 +11,7 @@ from src.utils.logger import get_logger, LogComponent, set_context, log_data_met
 # Get a logger specifically for the analyzer component
 logger = get_logger(LogComponent.GROK)
 
-def analyze_with_grok(data, vendor_name, progress_callback=None):
+def analyze_with_grok(data, vendor_name, progress_callback=None, max_results=5):
     """
     Analyze collected data using Grok AI.
     
@@ -20,6 +20,7 @@ def analyze_with_grok(data, vendor_name, progress_callback=None):
         vendor_name: Name of the vendor
         progress_callback: Optional callback function to report progress
                           Callback signature: func(stage, partial_results=None, message=None)
+        max_results: Maximum number of results to return (default: 5)
     """
     try:
         # Report initial progress
@@ -169,7 +170,7 @@ def analyze_with_grok(data, vendor_name, progress_callback=None):
                 if retry == max_retries - 1:
                     # This was our last attempt
                     logger.error(f"All {max_retries} API attempts failed, last status: {response.status_code}")
-                    return process_data_without_grok(data, vendor_name)
+                    return process_data_without_grok(data, vendor_name, progress_callback, max_results)
                     
                 # Wait before retrying
                 time.sleep(2)  # Add a small delay between retries
@@ -181,7 +182,7 @@ def analyze_with_grok(data, vendor_name, progress_callback=None):
                     # This was our last attempt
                     logger.error(f"All {max_retries} API attempts timed out")
                     logger.info("Falling back to processing without Grok due to timeout")
-                    return process_data_without_grok(data, vendor_name)
+                    return process_data_without_grok(data, vendor_name, progress_callback, max_results)
                     
                 # Wait before retrying
                 time.sleep(2)  # Add a small delay between retries
@@ -189,7 +190,7 @@ def analyze_with_grok(data, vendor_name, progress_callback=None):
             except requests.exceptions.RequestException as e:
                 logger.error(f"Request error with X.AI API on attempt {retry+1}: {str(e)}")
                 logger.info("Falling back to processing without Grok due to request error")
-                return process_data_without_grok(data, vendor_name)
+                return process_data_without_grok(data, vendor_name, progress_callback, max_results)
         
         if response.status_code != 200:
             error_response = None
@@ -202,7 +203,7 @@ def analyze_with_grok(data, vendor_name, progress_callback=None):
             logger.info("Falling back to processing without Grok")
             if progress_callback:
                 progress_callback('ERROR', partial_results, f'API error: {response.status_code}')
-            return process_data_without_grok(data, vendor_name, progress_callback)
+            return process_data_without_grok(data, vendor_name, progress_callback, max_results)
         
         # Process X.AI's response
         grok_response = response.json()
@@ -213,12 +214,16 @@ def analyze_with_grok(data, vendor_name, progress_callback=None):
         if progress_callback:
             progress_callback('FINALIZING', partial_results, 'Finalizing results from API response')
             
-        # Parse the generated text into structured data
-        results = parse_grok_response(generated_text, vendor_name)
+        # Parse the generated text into structured data with result limit
+        logger.info(f"Limiting results to maximum of {max_results}")
+        results = parse_grok_response(generated_text, vendor_name, max_results)
+        
+        # Log number of results
+        logger.info(f"Returning {len(results)} results out of potentially more")
         
         # Final progress update with complete results
         if progress_callback:
-            progress_callback('COMPLETE', results, 'Analysis complete!')
+            progress_callback('COMPLETE', results, f'Analysis complete! (Limited to {max_results} results)')
             
         return results
     
@@ -227,10 +232,55 @@ def analyze_with_grok(data, vendor_name, progress_callback=None):
         logger.info("Falling back to processing without Grok due to error")
         if progress_callback:
             progress_callback('ERROR', partial_results, f'Error: {str(e)}')
-        return process_data_without_grok(data, vendor_name, progress_callback)
+        return process_data_without_grok(data, vendor_name, progress_callback, max_results)
 
-def parse_grok_response(text, vendor_name):
-    """Parse Grok's response text into structured format."""
+def parse_grok_response(text, vendor_name, max_results=5):
+    """Parse Grok's response text into structured format.
+    
+    Args:
+        text: The text response from Grok
+        vendor_name: The name of the vendor
+        max_results: Maximum number of results to return (default: 5)
+    """
+    all_results = []
+    
+    # First try to parse as JSON
+    try:
+        # Try to extract just the JSON part if there's any surrounding text
+        json_start = text.find('[')
+        json_end = text.rfind(']') + 1
+        
+        if json_start >= 0 and json_end > json_start:
+            json_str = text[json_start:json_end]
+            companies_data = json.loads(json_str)
+            
+            # Process JSON format
+            for company in companies_data:
+                if isinstance(company, dict) and 'company_name' in company:
+                    name = company['company_name']
+                    confidence = company.get('confidence', 0.7)  # Default confidence
+                    
+                    if confidence >= 0.6:  # Only include companies with sufficient confidence
+                        all_results.append({
+                            'competitor': vendor_name,
+                            'customer_name': name,
+                            'customer_url': f"{name.lower().replace(' ', '')}.com",
+                            'confidence': confidence,
+                            'reason': company.get('reason', 'Extracted by Grok')
+                        })
+            
+            # If we successfully parsed JSON, sort by confidence and return top results
+            if all_results:
+                # Sort by confidence (highest first)
+                all_results = sorted(all_results, key=lambda x: x.get('confidence', 0), reverse=True)
+                # Limit to max_results
+                return all_results[:max_results]
+    except:
+        # If JSON parsing fails, fall back to line-by-line parsing
+        logger.info("JSON parsing failed, falling back to line-by-line parsing")
+        pass
+    
+    # If we get here, try the old line-by-line parsing method
     results = []
     
     # Split by new lines and process each line
@@ -257,11 +307,23 @@ def parse_grok_response(text, vendor_name):
                 'customer_name': customer_name,
                 'customer_url': url
             })
+            
+            # Stop if we've reached the maximum number of results
+            if len(results) >= max_results:
+                logger.info(f"Reached maximum of {max_results} results, truncating")
+                break
     
     return results
 
-def process_data_without_grok(data, vendor_name, progress_callback=None):
-    """Process data without using Grok AI."""
+def process_data_without_grok(data, vendor_name, progress_callback=None, max_results=5):
+    """Process data without using Grok AI.
+    
+    Args:
+        data: List of data items to analyze
+        vendor_name: Name of the vendor
+        progress_callback: Optional callback function to report progress
+        max_results: Maximum number of results to return (default: 5)
+    """
     # Update progress if callback provided
     if progress_callback:
         progress_callback('FINALIZING', None, 'Processing data without AI')
@@ -298,9 +360,14 @@ def process_data_without_grok(data, vendor_name, progress_callback=None):
             'customer_url': url
         })
     
+    # Limit results
+    if len(results) > max_results:
+        logger.info(f"Limiting non-Grok results from {len(results)} to {max_results}")
+        results = results[:max_results]
+    
     # Final progress update if callback provided
     if progress_callback:
-        progress_callback('COMPLETE', results, 'Analysis complete!')
+        progress_callback('COMPLETE', results, f'Analysis complete! (Limited to {max_results} results)')
         
     return results
 

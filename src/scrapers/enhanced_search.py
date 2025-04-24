@@ -169,8 +169,13 @@ def extract_companies_with_grok(text_content, page_url, vendor_name):
         return []
 
 @log_function_call
-def enhanced_vendor_search(vendor_name):
-    """Search vendor site and extract companies using Grok AI."""
+def enhanced_vendor_search(vendor_name, max_results=5):
+    """Search vendor site and extract companies using Grok AI.
+    
+    Args:
+        vendor_name: Name of the vendor to search for
+        max_results: Maximum number of results to return (default: 5)
+    """
     # Set the context for this operation
     set_context(vendor_name=vendor_name, operation="enhanced_vendor_search")
     
@@ -281,8 +286,21 @@ def enhanced_vendor_search(vendor_name):
             if name not in unique_customers or customer.get('confidence', 0) > unique_customers[name].get('confidence', 0):
                 unique_customers[name] = customer
         
-        deduplicated_data = list(unique_customers.values())
-        metrics['unique_companies'] = len(deduplicated_data)
+        # Get all deduplicated results
+        all_deduplicated = list(unique_customers.values())
+        metrics['unique_companies'] = len(all_deduplicated)
+        
+        # Sort by confidence and limit results
+        if len(all_deduplicated) > max_results:
+            logger.info(f"Limiting results from {len(all_deduplicated)} to {max_results}")
+            # Sort by confidence (highest first)
+            sorted_results = sorted(all_deduplicated, key=lambda x: x.get('confidence', 0), reverse=True)
+            # Limit to max_results
+            limited_results = sorted_results[:max_results]
+            metrics['returned_companies'] = len(limited_results)
+        else:
+            limited_results = all_deduplicated
+            metrics['returned_companies'] = len(limited_results)
         
         # Log final metrics
         metrics['end_time'] = time.time()
@@ -290,9 +308,9 @@ def enhanced_vendor_search(vendor_name):
         metrics['status'] = 'success'
         log_data_metrics(logger, "enhanced_vendor_search", metrics)
         
-        logger.info(f"Completed enhanced vendor search for {vendor_name}. Found {len(deduplicated_data)} unique companies from {metrics['pages_checked']} pages.")
+        logger.info(f"Completed enhanced vendor search for {vendor_name}. Found {len(all_deduplicated)} unique companies from {metrics['pages_checked']} pages. Returning top {len(limited_results)}.")
         
-        return deduplicated_data
+        return limited_results
         
     except Exception as e:
         logger.exception(f"Error in enhanced vendor search for {vendor_name}: {str(e)}")
