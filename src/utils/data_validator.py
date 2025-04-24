@@ -215,13 +215,16 @@ def validate_customer_item(item, vendor_name, level=ValidationLevel.MEDIUM):
             return False, f"Customer name appears to be content, not a company"
     
     # High level validation checks URL if available
-    if level in [ValidationLevel.HIGH, ValidationLevel.CRITICAL] and 'url' in item:
+    if 'url' in item:
         url = item.get('url')
         if not url:
             if level == ValidationLevel.CRITICAL:
                 return False, "Missing URL for customer"
         elif len(url) < 4:  # Minimum valid domain length
             return False, f"URL too short ({len(url)} chars)"
+        # Check if URL contains at least one dot (for domain TLD)
+        elif '.' not in url:
+            return False, f"Invalid URL format (missing domain extension)"
     
     # Critical level validation requires source
     if level == ValidationLevel.CRITICAL:
@@ -275,12 +278,14 @@ def validate_combined_data(vendor_data, featured_data, search_data, vendor_name,
     combined_data.extend(featured_result.filtered_data)
     combined_data.extend(search_result.filtered_data)
     
-    # Deduplicate by customer name
+    # Deduplicate by customer name and ensure valid URLs
     unique_customers = {}
     for item in combined_data:
         name = item['name'].lower()
-        if name not in unique_customers:
-            unique_customers[name] = item
+        # Only include items with valid URLs
+        if 'url' in item and item['url'] and len(item['url']) >= 4 and '.' in item['url']:
+            if name not in unique_customers:
+                unique_customers[name] = item
     
     combined_filtered = list(unique_customers.values())
     

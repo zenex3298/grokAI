@@ -383,6 +383,10 @@ def process_data_without_grok(data, vendor_name, progress_callback=None, max_res
 
 def cleanup_url(url):
     """Clean and validate URL."""
+    # If URL is empty or None, return None
+    if not url:
+        return None
+        
     # Remove common prefixes if present
     url = url.strip()
     for prefix in ['http://', 'https://', 'www.']:
@@ -395,5 +399,9 @@ def cleanup_url(url):
     
     # Ensure URL doesn't contain spaces or special characters
     url = url.lower().replace(' ', '')
+    
+    # Validate URL has proper domain structure
+    if len(url) < 4 or '.' not in url:
+        return None
     
     return url

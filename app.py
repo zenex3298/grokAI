@@ -62,7 +62,8 @@ def background_worker():
                     # Map vendor site metrics to job metrics
                     job_metrics = app.job_results[job_id]['metrics']
                     job_metrics['pages_checked'] = site_metrics.get('pages_checked', 0)
-                    job_metrics['customer_links_found'] = site_metrics.get('customer_links_found', 0)
+                    # Use unique_customer_pages instead of customer_links_found for consistency
+                    job_metrics['customer_links_found'] = site_metrics.get('unique_customer_pages', site_metrics.get('customer_links_found', 0))
                     
                     # Update progress based on vendor site status
                     status = site_metrics.get('status', '')
@@ -240,14 +241,21 @@ def background_worker():
                 max_to_display = 5
                 
                 for i, item in enumerate(combined_data):
+                    # Get the URL from the item
+                    url = item.get('url', None)
+                    
+                    # Skip items without a valid URL
+                    if not url:
+                        continue
+                        
                     # Only include the first max_to_display items
-                    if i >= max_to_display:
+                    if len(formatted_results) >= max_to_display:
                         break
                         
                     formatted_results.append({
                         'competitor': vendor_name,
                         'customer_name': item.get('name', 'Unknown'),
-                        'customer_url': item.get('url', None)
+                        'customer_url': url
                     })
                 
                 app_logger.info(f"Found {len(formatted_results)} customers for {vendor_name}")
