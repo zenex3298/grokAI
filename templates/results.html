@@ -359,10 +359,11 @@
                         
                         // Calculate completion percentage if target is specified
                         if (data.metrics.target_count) {
-                            const percent = Math.min(100, Math.round((uniqueCount / data.metrics.target_count) * 100));
+                            const targetCount = data.metrics.target_count || 20;
+                            const percent = Math.min(100, Math.round((uniqueCount / targetCount) * 100));
                             document.getElementById('completion-progress').style.width = `${percent}%`;
                             document.getElementById('processing-message').textContent = 
-                                `Found ${uniqueCount}/${data.metrics.target_count} target companies`;
+                                `Found ${uniqueCount}/${targetCount} target companies`;
                         }
                         
                         // If early exit occurred, show message
