@@ -59,3 +59,57 @@ body {
 .table tbody tr:hover {
     background-color: #f0f7ff;
 }
+
+/* Live feed styles */
+.text-pulse {
+    animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.6; }
+    100% { opacity: 1; }
+}
+
+/* Highlight newly added results */
+.new-result {
+    animation: highlight-row 2s ease-in-out;
+}
+
+@keyframes highlight-row {
+    0% { background-color: #ffffa3; }
+    100% { background-color: transparent; }
+}
+
+/* Live log output styles */
+#log-output {
+    font-family: monospace;
+    background-color: #1e1e1e;
+    color: #f0f0f0;
+    padding: 10px;
+    border-radius: 5px;
+    height: 200px;
+    overflow-y: auto;
+    margin-top: 15px;
+}
+
+#log-output .log-entry {
+    margin-bottom: 5px;
+    padding-left: 5px;
+    border-left: 3px solid transparent;
+}
+
+#log-output .log-entry.info { border-left-color: #4361ee; }
+#log-output .log-entry.warning { border-left-color: #ff9800; }
+#log-output .log-entry.error { border-left-color: #f44336; }
+#log-output .log-entry.success { border-left-color: #4caf50; }
+
+/* Status indicator animations */
+.status-animate-in {
+    animation: slide-in 0.3s ease-out;
+}
+
+@keyframes slide-in {
+    0% { transform: translateX(-10px); opacity: 0; }
+    100% { transform: translateX(0); opacity: 1; }
+}

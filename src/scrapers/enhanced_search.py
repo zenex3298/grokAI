@@ -191,6 +191,12 @@ def get_unique_companies(companies):
     
     return unique_companies
 
+class SearchResults:
+    """Class to hold search results and metrics."""
+    def __init__(self, results, metrics):
+        self.results = results
+        self.metrics = metrics
+
 def format_results(unique_companies_dict, vendor_name, metrics, max_results):
     """Format final results with metrics and return top companies by confidence."""
     # Convert dict to list
@@ -200,6 +206,7 @@ def format_results(unique_companies_dict, vendor_name, metrics, max_results):
         all_deduplicated = unique_companies_dict
         
     metrics['unique_companies'] = len(all_deduplicated)
+    metrics['target_count'] = max_results  # Add target count to metrics
     
     # Sort by confidence and limit results
     if len(all_deduplicated) > max_results:
@@ -221,15 +228,18 @@ def format_results(unique_companies_dict, vendor_name, metrics, max_results):
     
     logger.info(f"Completed enhanced vendor search for {vendor_name}. Found {len(all_deduplicated)} unique companies from {metrics['pages_checked']} pages. Returning top {len(limited_results)}.")
     
-    return limited_results
+    # Return both results and metrics
+    return SearchResults(limited_results, metrics)
 
 @log_function_call
-def enhanced_vendor_search(vendor_name, max_results=5):
+def enhanced_vendor_search(vendor_name, max_results=5, status_callback=None):
     """Search vendor site and extract companies using Grok AI.
     
     Args:
         vendor_name: Name of the vendor to search for
         max_results: Maximum number of results to return (default: 5)
+        status_callback: Optional callback function to update processing status
+                        Callback signature: func(metrics: dict) -> None
         
     NOTE: This function will stop processing as soon as max_results 
           companies are found, to improve performance.
@@ -245,16 +255,31 @@ def enhanced_vendor_search(vendor_name, max_results=5):
         'customer_links_found': 0,
         'grok_api_calls': 0,
         'companies_found': 0,
+        'target_count': max_results,
         'early_exit': False,
+        'current_page': None,
         'status': 'started'
     }
     
+    # Call status callback with initial metrics if provided
+    if status_callback:
+        status_callback(metrics.copy())
+    
     try:
         logger.info(f"Starting enhanced vendor search for: {vendor_name}")
+        metrics['status'] = 'generating_domain'
         
         # Generate domain from vendor name
         domain = get_domain_from_name(vendor_name)
         logger.info(f"Generated domain: {domain}")
+        
+        # Update metrics with current page
+        metrics['current_page'] = domain
+        metrics['status'] = 'accessing_vendor_site'
+        
+        # Call status callback if provided
+        if status_callback:
+            status_callback(metrics.copy())
         
         # Make request to vendor site
         try:
@@ -266,6 +291,11 @@ def enhanced_vendor_search(vendor_name, max_results=5):
                 metrics['status'] = 'failed'
                 metrics['failure_reason'] = f"HTTP {response.status_code}"
                 log_data_metrics(logger, "enhanced_vendor_search", metrics)
+                
+                # Notify about failure via callback
+                if status_callback:
+                    status_callback(metrics.copy())
+                    
                 return []
                 
             logger.info(f"Successfully loaded vendor site: {domain} ({len(response.text)} bytes)")
@@ -275,6 +305,11 @@ def enhanced_vendor_search(vendor_name, max_results=5):
             metrics['status'] = 'failed'
             metrics['failure_reason'] = f"Request error: {type(e).__name__}"
             log_data_metrics(logger, "enhanced_vendor_search", metrics)
+            
+            # Notify about failure via callback
+            if status_callback:
+                status_callback(metrics.copy())
+                
             return []
         
         # Parse HTML
@@ -283,6 +318,11 @@ def enhanced_vendor_search(vendor_name, max_results=5):
         # Store all found customers
         all_customers = []
         metrics['pages_checked'] += 1
+        metrics['status'] = 'finding_customer_pages'
+        
+        # Update status via callback
+        if status_callback:
+            status_callback(metrics.copy())
         
         # Look for customer pages
         customer_pages = ['customers', 'case-studies', 'success-stories', 'success', 'stories', 'clients', 'testimonials', 'review', 'reviews']
@@ -301,6 +341,11 @@ def enhanced_vendor_search(vendor_name, max_results=5):
         customer_page_links = list(set(customer_page_links))
         metrics['unique_customer_pages'] = len(customer_page_links)
         
+        # Update status after finding customer pages
+        metrics['status'] = 'analyzing_main_page'
+        if status_callback:
+            status_callback(metrics.copy())
+        
         # First analyze the main page with Grok
         logger.info(f"Analyzing main page content with Grok: {domain}")
         main_page_text = extract_text_from_html(response.text)
@@ -310,20 +355,45 @@ def enhanced_vendor_search(vendor_name, max_results=5):
         all_customers.extend(main_page_customers)
         metrics['companies_found'] += len(main_page_customers)
         
+        # Update status after analyzing main page and update results
+        metrics['status'] = 'processing_main_page_results'
+        if status_callback:
+            status_callback(metrics.copy())
+        
         # Check if we've found enough companies already
         unique_companies = get_unique_companies(all_customers)
         if len(unique_companies) >= max_results:
             logger.info(f"Found {len(unique_companies)} unique companies from main page, which meets our target of {max_results}. Stopping early.")
             metrics['early_exit'] = True
+            metrics['current_page'] = domain  # Add the current page to metrics
+            metrics['status'] = 'complete'
+            
+            # Final callback before returning
+            if status_callback:
+                status_callback(metrics.copy())
+                
             return format_results(unique_companies, vendor_name, metrics, max_results)
         
         # Keep track of how many unique companies we have as we go
         unique_count = len(unique_companies)
         logger.info(f"Found {unique_count}/{max_results} unique companies so far, continuing search...")
         
+        # Update status to analyzing customer pages
+        metrics['status'] = 'analyzing_customer_pages'
+        metrics['current_customer_page_index'] = 0
+        metrics['total_customer_pages'] = len(customer_page_links)
+        if status_callback:
+            status_callback(metrics.copy())
+        
         # Analyze each customer page with Grok
-        for page_url in customer_page_links:
+        for index, page_url in enumerate(customer_page_links):
             try:
+                # Update current page index and URL
+                metrics['current_customer_page_index'] = index + 1
+                metrics['current_page'] = page_url
+                if status_callback:
+                    status_callback(metrics.copy())
+                
                 logger.info(f"Fetching customer page: {page_url}")
                 page_response = requests.get(page_url, timeout=15)
                 
@@ -336,6 +406,10 @@ def enhanced_vendor_search(vendor_name, max_results=5):
                 
                 # Extract companies using Grok
                 logger.info(f"Analyzing customer page content with Grok: {page_url}")
+                metrics['status'] = 'analyzing_page_content'
+                if status_callback:
+                    status_callback(metrics.copy())
+                    
                 page_customers = extract_companies_with_grok(page_text, page_url, vendor_name)
                 metrics['grok_api_calls'] += 1
                 
@@ -349,16 +423,40 @@ def enhanced_vendor_search(vendor_name, max_results=5):
                 unique_count = len(unique_companies)
                 logger.info(f"Now have {unique_count}/{max_results} unique companies")
                 
+                # Update status with processing results
+                metrics['status'] = 'processing_results'
+                metrics['unique_companies_count'] = unique_count
+                if status_callback:
+                    status_callback(metrics.copy())
+                
                 if unique_count >= max_results:
                     logger.info(f"Reached target of {max_results} unique companies. Stopping search early.")
                     metrics['early_exit'] = True
+                    metrics['current_page'] = page_url  # Add the current page to metrics
+                    metrics['status'] = 'complete'
+                    
+                    # Final callback before returning
+                    if status_callback:
+                        status_callback(metrics.copy())
+                        
                     return format_results(unique_companies, vendor_name, metrics, max_results)
                 
             except Exception as e:
                 logger.error(f"Error processing customer page {page_url}: {str(e)}")
+                metrics['status'] = 'error_processing_page'
+                metrics['last_error'] = str(e)
+                if status_callback:
+                    status_callback(metrics.copy())
                 continue
         
-        # Process results for normal termination
+        # Process results for normal termination - no more pages to process
+        metrics['current_page'] = "Done - All pages processed"
+        metrics['status'] = 'complete'
+        
+        # Final callback before returning
+        if status_callback:
+            status_callback(metrics.copy())
+            
         return format_results(get_unique_companies(all_customers), vendor_name, metrics, max_results)
         
     except Exception as e:
@@ -372,4 +470,8 @@ def enhanced_vendor_search(vendor_name, max_results=5):
         metrics['error_message'] = str(e)
         log_data_metrics(logger, "enhanced_vendor_search", metrics)
         
+        # Final error callback
+        if status_callback:
+            status_callback(metrics.copy())
+            
         return []

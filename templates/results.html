@@ -29,8 +29,14 @@
                         </div>
                         <p id="progress-message">We're analyzing data from multiple sources to identify customers of {{ vendor_name }}.</p>
                         <div id="status-message" class="alert alert-info">
-                            <p><strong>Status:</strong> <span id="job-status">Initializing...</span></p>
-                            <p><span id="elapsed-time">00:00</span></p>
+                            <div class="d-flex justify-content-between align-items-center">
+                                <div>
+                                    <p><strong>Status:</strong> <span id="job-status">Initializing...</span></p>
+                                </div>
+                                <div>
+                                    <span id="elapsed-time" class="badge bg-secondary fs-6">00:00</span>
+                                </div>
+                            </div>
                         </div>
                         
                         <!-- Validation status (shown during validation) -->
@@ -78,6 +84,65 @@
                             <div id="validation-error" class="alert alert-warning mt-2" style="display: none;"></div>
                         </div>
                         
+                        <!-- Processing stats section -->
+                        <div id="processing-stats" class="mt-4 mb-3">
+                            <h4>Processing Statistics</h4>
+                            <div class="row g-2">
+                                <div class="col-md-3">
+                                    <div class="card bg-light text-dark">
+                                        <div class="card-body p-2 text-center">
+                                            <h6>Pages Analyzed</h6>
+                                            <h3 id="pages-checked-count">0</h3>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="card bg-light text-dark">
+                                        <div class="card-body p-2 text-center">
+                                            <h6>Customer Pages</h6>
+                                            <h3 id="customer-links-count">0</h3>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="card bg-light text-dark">
+                                        <div class="card-body p-2 text-center">
+                                            <h6>Companies Found</h6>
+                                            <h3 id="companies-found-count">0</h3>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="card bg-light text-dark">
+                                        <div class="card-body p-2 text-center">
+                                            <h6>Unique Companies</h6>
+                                            <h3 id="unique-companies-count">0</h3>
+                                            <div id="status-indicator" class="small text-muted mt-1"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="progress mt-2" style="height: 10px;">
+                                <div id="completion-progress" class="progress-bar bg-success" style="width: 0%"></div>
+                            </div>
+                            <div id="processing-message" class="text-center text-muted small mt-1"></div>
+                        </div>
+                        
+                        <!-- Current page section -->
+                        <div id="current-page-section" class="mt-3 mb-3" style="display: none;">
+                            <div class="alert alert-info py-2">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <strong>Currently analyzing:</strong> <span id="current-page-url">-</span>
+                                    </div>
+                                    <div class="spinner-border spinner-border-sm text-primary" role="status">
+                                        <span class="visually-hidden">Loading...</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        
                         <!-- Partial results section (shown once we have some data) -->
                         <div id="partial-results-section" style="display: none;">
                             <h4 class="mt-4">Preliminary Results</h4>
@@ -97,6 +162,37 @@
                     <!-- Static results (not polling) -->
                     <div class="card-body">
                         <h2 class="h4 mb-3">Customers of {{ vendor_name }}</h2>
+                        
+                        {% if metrics %}
+                        <!-- Show processing stats -->
+                        <div class="alert alert-info mb-4">
+                            <h5>Processing Summary</h5>
+                            <div class="row g-2">
+                                <div class="col-md-3">
+                                    <div class="small fw-bold">Pages Analyzed:</div>
+                                    <div>{{ metrics.pages_checked }}</div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="small fw-bold">Customer Pages:</div>
+                                    <div>{{ metrics.customer_links_found }}</div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="small fw-bold">Companies Found:</div>
+                                    <div>{{ metrics.companies_found }}</div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="small fw-bold">Unique Companies:</div>
+                                    <div>{{ metrics.unique_companies }}</div>
+                                </div>
+                            </div>
+                            <div class="mt-2 small">
+                                {% if metrics.early_exit %}
+                                <div class="text-success">✓ Target number of companies found early! ({{ metrics.returned_companies }}/{{ metrics.target_count }})</div>
+                                {% endif %}
+                                <div>Processing completed in {{ metrics.duration|round(2) }} seconds</div>
+                            </div>
+                        </div>
+                        {% endif %}
                         
                         {% if results and results|length > 0 %}
                         <div class="table-responsive">
@@ -178,7 +274,8 @@
             return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
         }
         
-        // Poll for job status every 2 seconds
+        
+        // Poll for job status every 1 second
         const pollInterval = setInterval(() => {
             fetch(`/job_status/${jobId}`)
                 .then(response => response.json())
@@ -236,6 +333,144 @@
                         validationSection.style.display = 'none';
                     }
                     
+                    // Update processing statistics if available
+                    if (data.metrics) {
+                        // Update counts
+                        document.getElementById('pages-checked-count').textContent = data.metrics.pages_checked || 0;
+                        document.getElementById('customer-links-count').textContent = data.metrics.customer_links_found || 0;
+                        document.getElementById('companies-found-count').textContent = data.metrics.companies_found || 0;
+                        
+                        // Use unique_companies_count or fall back to unique_companies if available
+                        const uniqueCount = data.metrics.unique_companies_count || data.metrics.unique_companies || 0;
+                        document.getElementById('unique-companies-count').textContent = uniqueCount;
+                        
+                        // Calculate completion percentage if target is specified
+                        if (data.metrics.target_count) {
+                            const percent = Math.min(100, Math.round((uniqueCount / data.metrics.target_count) * 100));
+                            document.getElementById('completion-progress').style.width = `${percent}%`;
+                            document.getElementById('processing-message').textContent = 
+                                `Found ${uniqueCount}/${data.metrics.target_count} target companies`;
+                        }
+                        
+                        // If early exit occurred, show message
+                        if (data.metrics.early_exit) {
+                            document.getElementById('processing-message').innerHTML = 
+                                '<span class="text-success">✓ Target number of companies found! Analysis completed early.</span>';
+                        }
+                        
+                        // Show current page being analyzed with additional context based on status
+                        const statusContext = data.metrics.status || '';
+                        if (data.metrics.current_page) {
+                            document.getElementById('current-page-section').style.display = 'block';
+                            let pageDisplay = data.metrics.current_page;
+                            
+                            // Add context based on processing stage
+                            if (statusContext === 'analyzing_customer_pages' && 
+                                data.metrics.current_customer_page_index !== undefined && 
+                                data.metrics.total_customer_pages !== undefined) {
+                                pageDisplay += ` (page ${data.metrics.current_customer_page_index}/${data.metrics.total_customer_pages})`;
+                            } else if (statusContext === 'analyzing_main_page') {
+                                pageDisplay += ' (main vendor page)';
+                            } else if (statusContext === 'analyzing_page_content') {
+                                pageDisplay += ' (extracting companies)';
+                            }
+                            
+                            document.getElementById('current-page-url').textContent = pageDisplay;
+                        } else {
+                            document.getElementById('current-page-section').style.display = 'none';
+                        }
+                        
+                        // Update status indicator with current processing status
+                        const statusElement = document.getElementById('status-indicator');
+                        if (statusElement) {
+                            let statusText = '';
+                            let statusClass = 'text-muted';
+                            
+                            switch(statusContext) {
+                                case 'started':
+                                    statusText = 'Starting...';
+                                    break;
+                                case 'generating_domain':
+                                    statusText = 'Finding vendor site';
+                                    break;
+                                case 'accessing_vendor_site':
+                                    statusText = 'Accessing site';
+                                    break;
+                                case 'finding_customer_pages':
+                                    statusText = 'Finding customer info';
+                                    statusClass = 'text-primary';
+                                    break;
+                                case 'analyzing_main_page':
+                                    statusText = 'Analyzing main page';
+                                    statusClass = 'text-primary';
+                                    break;
+                                case 'analyzing_customer_pages':
+                                    statusText = 'Analyzing customer pages';
+                                    statusClass = 'text-primary';
+                                    break;
+                                case 'analyzing_page_content':
+                                    statusText = 'Extracting data';
+                                    statusClass = 'text-info';
+                                    break;
+                                case 'processing_results':
+                                    statusText = 'Processing results';
+                                    statusClass = 'text-info';
+                                    break;
+                                case 'complete':
+                                    statusText = 'Analysis complete';
+                                    statusClass = 'text-success';
+                                    break;
+                                case 'failed':
+                                case 'error':
+                                    statusText = 'Error occurred';
+                                    statusClass = 'text-danger';
+                                    break;
+                                default:
+                                    if (statusContext.startsWith('error')) {
+                                        statusText = 'Error: ' + statusContext.replace('error_', '');
+                                        statusClass = 'text-danger';
+                                    } else {
+                                        statusText = statusContext;
+                                    }
+                            }
+                            
+                            statusElement.textContent = statusText;
+                            statusElement.className = `small mt-1 ${statusClass}`;
+                        }
+                    }
+                    
+                    // Use latest log entry to update the status message if available
+                    if (data.logs && data.logs.length > 0) {
+                        // Get the most recent log entry
+                        const latestLog = data.logs[data.logs.length - 1];
+                        
+                        // Update status message with the most recent activity
+                        if (latestLog && latestLog.message) {
+                            // Format the message to be more status-like 
+                            let statusMsg = latestLog.message;
+                            
+                            // Add proper formatting
+                            statusElement.textContent = statusMsg;
+                        }
+                    }
+                    
+                    // Explicitly force update of the processing statistics even if they're already set
+                    // This ensures they're always refreshed from the latest data
+                    if (data.metrics) {
+                        document.getElementById('pages-checked-count').textContent = data.metrics.pages_checked || 0;
+                        document.getElementById('customer-links-count').textContent = data.metrics.customer_links_found || 0;
+                        document.getElementById('companies-found-count').textContent = data.metrics.companies_found || 0;
+                        document.getElementById('unique-companies-count').textContent = 
+                            data.metrics.unique_companies_count || data.metrics.unique_companies || 0;
+                        
+                        // Visual indicator of update
+                        const statsCards = document.querySelectorAll('#processing-stats .card');
+                        statsCards.forEach(card => {
+                            card.classList.add('border-primary');
+                            setTimeout(() => card.classList.remove('border-primary'), 300);
+                        });
+                    }
+                    
                     // Show partial results if available
                     if (data.partial_results && data.partial_results.length > 0 && 
                         (data.status === 'running' || data.status === 'completed_with_errors')) {
@@ -269,7 +504,7 @@
                     console.error('Error polling job status:', error);
                     statusElement.textContent = 'Error checking status';
                 });
-        }, 2000);
+        }, 1000); // Poll every 1 second
         
         // Function to render results table (shared between partial and final results)
         function renderResultsTable(results, container, isPartial = false) {

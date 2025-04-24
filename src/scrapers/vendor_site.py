@@ -17,8 +17,14 @@ def get_domain_from_name(vendor_name):
     return f"https://www.{domain}.com"
 
 @log_function_call
-def scrape_vendor_site(vendor_name):
-    """Scrape vendor website for customer information."""
+def scrape_vendor_site(vendor_name, progress_callback=None):
+    """Scrape vendor website for customer information.
+    
+    Args:
+        vendor_name: Name of the vendor to search for
+        progress_callback: Optional callback for progress updates
+                        Callback signature: func(metrics_dict) -> None
+    """
     # Set the context for this operation
     set_context(vendor_name=vendor_name, operation="vendor_site_scrape")
     
@@ -31,8 +37,12 @@ def scrape_vendor_site(vendor_name):
         'logo_sections_found': 0,
         'customer_links_found': 0,
         'customers_found': 0,
-        'status': 'started'
+        'status': 'vendor_site_started'
     }
+    
+    # Initial callback with starting state
+    if progress_callback:
+        progress_callback(metrics.copy())
     
     try:
         logger.info(f"Starting vendor site scraping for: {vendor_name}")
@@ -41,11 +51,23 @@ def scrape_vendor_site(vendor_name):
         domain = get_domain_from_name(vendor_name)
         logger.info(f"Generated domain: {domain}", extra={'domain': domain})
         
+        # Update metrics with domain generation
+        metrics['status'] = 'vendor_site_domain_generated'
+        metrics['generated_domain'] = domain
+        if progress_callback:
+            progress_callback(metrics.copy())
+        
         # Make request to vendor site
         start_req = time.time()
         logger.debug(f"Making HTTP request to vendor site: {domain}")
         
         try:
+            # Update metrics with request start
+            metrics['status'] = 'vendor_site_requesting'
+            metrics['current_url'] = domain
+            if progress_callback:
+                progress_callback(metrics.copy())
+                
             response = requests.get(domain, timeout=10)
             metrics['main_page_status'] = response.status_code
             metrics['main_page_load_time'] = time.time() - start_req
@@ -55,31 +77,52 @@ def scrape_vendor_site(vendor_name):
                               extra={'status_code': response.status_code, 'url': domain})
                 metrics['status'] = 'failed'
                 metrics['failure_reason'] = f"HTTP {response.status_code}"
+                if progress_callback:
+                    progress_callback(metrics.copy())
                 log_data_metrics(logger, "vendor_site_scrape", metrics)
                 return []
                 
             logger.info(f"Successfully loaded vendor site: {domain} ({len(response.text)} bytes)", 
                        extra={'response_size': len(response.text)})
             
+            # Update metrics with successful load
+            metrics['status'] = 'vendor_site_loaded'
+            metrics['content_bytes'] = len(response.text)
+            metrics['pages_checked'] += 1
+            if progress_callback:
+                progress_callback(metrics.copy())
+            
         except requests.exceptions.RequestException as e:
             logger.error(f"Request error accessing {domain}: {str(e)}", 
                         extra={'error_type': type(e).__name__, 'url': domain})
             metrics['status'] = 'failed'
             metrics['failure_reason'] = f"Request error: {type(e).__name__}"
+            if progress_callback:
+                progress_callback(metrics.copy())
             log_data_metrics(logger, "vendor_site_scrape", metrics)
             return []
         
         # Parse HTML
         logger.debug(f"Parsing HTML content from {domain}")
+        
+        # Update metrics with parsing status
+        metrics['status'] = 'vendor_site_parsing'
+        if progress_callback:
+            progress_callback(metrics.copy())
+            
         soup = BeautifulSoup(response.text, 'html.parser')
         
         # Look for customer pages
         customer_data = []
-        metrics['pages_checked'] += 1
         
         # Check for common customer page links
-        customer_pages = ['customers', 'case-studies', 'success-stories', 'clients', 'testimonials']
+        customer_pages = ['customers', 'case-studies', 'success', 'stories', 'clients', 'testimonials', 'review','reviews']
         logger.info(f"Searching for customer pages with keywords: {', '.join(customer_pages)}")
+        
+        # Update metrics with search status
+        metrics['status'] = 'vendor_site_searching_links'
+        if progress_callback:
+            progress_callback(metrics.copy())
         
         customer_page_links = []
         for page in customer_pages:
@@ -90,10 +133,20 @@ def scrape_vendor_site(vendor_name):
                     logger.info(f"Found potential customer page: {customer_page_url}", 
                               extra={'page_type': page, 'url': customer_page_url})
                     metrics['customer_links_found'] += 1
+                    
+                    # Update metrics every 5 links found
+                    if metrics['customer_links_found'] % 5 == 0:
+                        if progress_callback:
+                            progress_callback(metrics.copy())
         
         # Remove duplicate URLs
         customer_page_links = list(set(customer_page_links))
         metrics['unique_customer_pages'] = len(customer_page_links)
+        
+        # Update metrics with customer pages found
+        metrics['status'] = 'vendor_site_customer_pages_found'
+        if progress_callback:
+            progress_callback(metrics.copy())
         
         # Scrape each customer page
         for page_url in customer_page_links:

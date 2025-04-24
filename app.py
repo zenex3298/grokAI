@@ -1,37 +1,12 @@
 import os
+import time
 import threading
 import queue
-import time
-import json
-from flask import Flask, render_template, request, jsonify, session
+from flask import Flask, render_template, request, jsonify
 from dotenv import load_dotenv
 from src.scrapers.vendor_site import scrape_vendor_site
-from src.scrapers.featured_customers import scrape_featured_customers
-from src.scrapers.search_engines import search_google
-from src.analyzers.grok_analyzer import analyze_with_grok
+from src.scrapers.enhanced_search import enhanced_vendor_search
 from src.utils.logger import setup_logging, get_logger, LogComponent, set_context
-from src.utils.data_validator import (
-    validate_customer_data, 
-    validate_combined_data,
-    ValidationLevel,
-    is_empty_data
-)
-
-# Global job queue and results store
-job_queue = queue.Queue()
-job_results = {}
-
-# Progress tracking for each step of the analysis
-PROGRESS_STEPS = {
-    'INIT': {'step': 0, 'message': 'Initializing analysis...'},
-    'SCRAPING': {'step': 10, 'message': 'Scraping vendor site...'},
-    'SEARCH': {'step': 30, 'message': 'Searching for customer information...'},
-    'PREPARING': {'step': 50, 'message': 'Preparing data for analysis...'},
-    'API_CALL': {'step': 60, 'message': 'Analyzing with AI...'},
-    'FINALIZING': {'step': 90, 'message': 'Finalizing results...'},
-    'COMPLETE': {'step': 100, 'message': 'Analysis complete!'},
-    'ERROR': {'step': 100, 'message': 'Error occurred during analysis'}
-}
 
 # Load environment variables
 load_dotenv()
@@ -43,168 +18,286 @@ logger = setup_logging()
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev_secret_key')
 
-# Worker thread function to process jobs in the background
-def worker():
-    """Background worker that processes API calls asynchronously."""
-    # Get worker-specific logger
-    worker_logger = get_logger(LogComponent.WORKER)
-    worker_logger.info("Starting background worker thread")
+# Initialize job tracking structures
+app.job_results = {}
+app.job_logs = {}
+app.job_queue = queue.Queue()  # Queue for background processing
+
+# Worker thread function to process jobs in background
+def background_worker():
+    app_logger = get_logger(LogComponent.APP)
+    app_logger.info("Background worker thread started")
     
     while True:
         try:
-            # Get a job from the queue
-            job_id, vendor_name, validated_data = job_queue.get(timeout=1)
+            # Get a job from the queue (blocks until a job is available)
+            job_id, vendor_name = app.job_queue.get()
+            app_logger.info(f"Processing job {job_id} for vendor {vendor_name}")
             
-            # Set context for this job
-            set_context(vendor_name=vendor_name, job_id=job_id, operation="grok_analysis")
-            worker_logger.info(f"Worker processing job {job_id} for vendor {vendor_name}")
+            # Mark the job as being processed
+            app.job_results[job_id]['status'] = 'processing'
             
-            # Update job status to running if it exists, otherwise initialize it
-            if job_id in job_results:
-                job_results[job_id].update({
-                    'status': 'running',
-                    'progress': PROGRESS_STEPS['API_CALL']
-                })
-            else:
-                # Should never happen if job was properly initialized in /analyze
-                job_results[job_id] = {
-                    'status': 'running',
-                    'progress': PROGRESS_STEPS['API_CALL'],
-                    'partial_results': [],
-                    'results': [],
-                    'error': None,
-                    'vendor_name': vendor_name,
-                    'start_time': time.time()
-                }
-            
-            # Final validation check before sending to API
-            # This is a safeguard in case the job was queued without validation
-            if is_empty_data(validated_data, min_items=3):
-                error_message = "Insufficient data for analysis. No valid customer data found."
-                worker_logger.warning(f"Data validation failed in worker for job {job_id}: {error_message}")
-                
-                job_results[job_id].update({
-                    'status': 'failed',
-                    'progress': PROGRESS_STEPS['ERROR'],
-                    'results': [],
-                    'error': error_message,
-                    'error_details': {
-                        'type': 'worker_validation_error',
-                        'count': len(validated_data)
-                    },
-                    'end_time': time.time(),
-                    'duration': time.time() - job_results[job_id]['start_time']
-                })
-                job_queue.task_done()
-                continue
-            
-            # Process with Grok AI
+            # Process vendor site scraping
             try:
-                worker_logger.info(f"Starting Grok analysis for job {job_id} with {len(validated_data)} validated items")
+                # Add initial log
+                log_entry = {'type': 'info', 'message': f"Starting analysis for {vendor_name}...", 'timestamp': time.time()}
+                app.job_logs[job_id].append(log_entry)
                 
-                # Register a progress callback
-                def update_progress(stage, partial_results=None, message=None):
-                    worker_logger.debug(f"Progress update: {stage}, {message}")
+                # Update progress
+                app.job_results[job_id]['progress'] = {
+                    'step': 20,
+                    'message': f'Searching vendor website for {vendor_name}...'
+                }
+                
+                # Log entry for vendor site search
+                log_entry = {'type': 'info', 'message': f"Searching vendor website for {vendor_name}...", 'timestamp': time.time()}
+                app.job_logs[job_id].append(log_entry)
+                
+                # Step 1: Get basic customer information with status callback
+                def vendor_site_callback(site_metrics):
+                    # Update job metrics with vendor site metrics
+                    if 'metrics' not in app.job_results[job_id]:
+                        app.job_results[job_id]['metrics'] = {}
                     
-                    if stage in PROGRESS_STEPS:
-                        job_results[job_id]['progress'] = PROGRESS_STEPS[stage]
-                    else:
-                        # Custom progress stage (percentage-based)
-                        try:
-                            # Try to convert stage to float/int if it's a number
-                            stage_num = float(stage)
-                            job_results[job_id]['progress'] = {
-                                'step': 60 + (stage_num * 30 / 100),  # Map 0-100 to 60-90 range
-                                'message': message or f'Processing... {stage_num:.0f}%'
-                            }
-                        except (ValueError, TypeError):
-                            # If not a number, use as-is
-                            job_results[job_id]['progress'] = {
-                                'step': 75,  # Default to 75% if we can't determine stage
-                                'message': message or f'Processing... {stage}'
-                            }
+                    # Map vendor site metrics to job metrics
+                    job_metrics = app.job_results[job_id]['metrics']
+                    job_metrics['pages_checked'] = site_metrics.get('pages_checked', 0)
+                    job_metrics['customer_links_found'] = site_metrics.get('customer_links_found', 0)
                     
-                    # If we have partial results, add them
-                    if partial_results:
-                        # Validate partial results
-                        if isinstance(partial_results, list):
-                            # Basic validation of partial results format
-                            valid_partial = [item for item in partial_results 
-                                            if isinstance(item, dict) and 'customer_name' in item]
-                            
-                            if valid_partial:
-                                job_results[job_id]['partial_results'] = valid_partial
-                                worker_logger.debug(f"Updated partial results: {len(valid_partial)} items")
-                
-                # Call analysis with progress tracking
-                results = analyze_with_grok(validated_data, vendor_name, progress_callback=update_progress)
-                
-                # Validate final results
-                if not results or len(results) == 0:
-                    worker_logger.warning(f"Grok analysis returned no results for job {job_id}")
+                    # Update progress based on vendor site status
+                    status = site_metrics.get('status', '')
+                    message = f"Processing vendor site..."
                     
-                    # If we have partial results, use those instead
-                    if job_results[job_id].get('partial_results'):
-                        worker_logger.info(f"Using {len(job_results[job_id]['partial_results'])} partial results as final results")
-                        results = job_results[job_id]['partial_results']
+                    if status == 'vendor_site_started':
+                        message = f"Starting vendor site analysis..."
+                    elif status == 'vendor_site_domain_generated':
+                        message = f"Generated domain for {vendor_name}: {site_metrics.get('generated_domain', '')}"
+                    elif status == 'vendor_site_requesting':
+                        message = f"Accessing vendor website: {site_metrics.get('current_url', '')}"
+                    elif status == 'vendor_site_loaded':
+                        message = f"Successfully loaded vendor website ({site_metrics.get('content_bytes', 0)} bytes)"
+                    elif status == 'vendor_site_parsing':
+                        message = f"Parsing vendor website content..."
+                    elif status == 'vendor_site_searching_links':
+                        message = f"Searching for customer pages... Found {site_metrics.get('customer_links_found', 0)} links"
+                    elif status == 'vendor_site_customer_pages_found':
+                        message = f"Found {site_metrics.get('unique_customer_pages', 0)} unique customer pages"
+                    elif status == 'failed':
+                        message = f"Error: {site_metrics.get('failure_reason', 'Unknown error')}"
+                    
+                    # Update progress
+                    progress_step = min(40, 10 + site_metrics.get('customer_links_found', 0) * 2)
+                    app.job_results[job_id]['progress'] = {
+                        'step': progress_step,
+                        'message': message
+                    }
+                    
+                    # Add log entry for significant events
+                    log_entry = None
+                    if status == 'vendor_site_domain_generated':
+                        log_entry = {'type': 'info', 'message': f"Generated domain: {site_metrics.get('generated_domain', '')}"}
+                    elif status == 'vendor_site_loaded':
+                        log_entry = {'type': 'info', 'message': f"Loaded vendor website for {vendor_name}"}
+                    elif status == 'vendor_site_customer_pages_found' and site_metrics.get('unique_customer_pages', 0) > 0:
+                        log_entry = {'type': 'info', 'message': f"Found {site_metrics.get('unique_customer_pages', 0)} customer pages"}
+                    elif status == 'failed':
+                        log_entry = {'type': 'error', 'message': f"Error with vendor site: {site_metrics.get('failure_reason', 'Unknown error')}"}
+                    
+                    # Add log entry if we have one
+                    if log_entry:
+                        log_entry['timestamp'] = time.time()
+                        app.job_logs[job_id].append(log_entry)
                 
-                # Update with final results
-                job_results[job_id].update({
+                # Run vendor site scraping with callback
+                vendor_data = scrape_vendor_site(vendor_name, progress_callback=vendor_site_callback)
+                
+                # Update progress after vendor site scraping
+                app.job_results[job_id]['progress'] = {
+                    'step': 50,
+                    'message': f'Running enhanced search with Grok for {vendor_name}...'
+                }
+                
+                # Log entry for enhanced search
+                log_entry = {'type': 'info', 'message': f"Running enhanced search with Grok for {vendor_name}...", 'timestamp': time.time()}
+                app.job_logs[job_id].append(log_entry)
+                
+                # Step 2: Do enhanced search with status callback
+                def update_status(metrics):
+                    # Update metrics
+                    if 'metrics' not in app.job_results[job_id]:
+                        app.job_results[job_id]['metrics'] = {}
+                    app.job_results[job_id]['metrics'].update(metrics.copy() if metrics else {})
+                    
+                    # Update status based on metrics
+                    status = metrics.get('status', '')
+                    app.job_results[job_id]['status'] = status if status != 'complete' else 'completed'
+                    
+                    # Generate appropriate message
+                    message = "Processing..."
+                    if status == 'generating_domain':
+                        message = f"Generating domain for {vendor_name}..."
+                    elif status == 'accessing_vendor_site':
+                        message = f"Accessing website for {vendor_name}..."
+                    elif status == 'finding_customer_pages':
+                        message = f"Searching for customer pages..."
+                    elif status == 'analyzing_main_page':
+                        message = f"Analyzing main page content..."
+                    elif status == 'analyzing_customer_pages':
+                        page_index = metrics.get('current_customer_page_index', 0)
+                        total_pages = metrics.get('total_customer_pages', 0)
+                        message = f"Analyzing customer page {page_index}/{total_pages}..."
+                    elif status == 'analyzing_page_content':
+                        message = f"Processing content from {metrics.get('current_page', '')}..."
+                    elif status == 'processing_results':
+                        message = f"Processing results... Found {metrics.get('companies_found', 0)} companies so far"
+                    elif status == 'complete':
+                        message = f"Analysis complete! Found {metrics.get('companies_found', 0)} companies."
+                    elif status == 'error' or status.startswith('error'):
+                        message = f"Error: {metrics.get('error_message', 'Unknown error occurred')}"
+                    
+                    # Update progress
+                    progress_step = 50
+                    if status == 'complete':
+                        progress_step = 80
+                    elif status.startswith('error'):
+                        progress_step = 80
+                    elif 'companies_found' in metrics and 'target_count' in metrics and metrics['target_count'] > 0:
+                        companies_ratio = min(1.0, metrics['companies_found'] / metrics['target_count'])
+                        progress_step = 50 + int(companies_ratio * 30)
+                    
+                    app.job_results[job_id]['progress'] = {
+                        'step': progress_step,
+                        'message': message
+                    }
+                    
+                    # Add log entry if needed
+                    log_entry = None
+                    if status == 'generating_domain':
+                        log_entry = {'type': 'info', 'message': f"Generating domain for {vendor_name}..."}
+                    elif status == 'accessing_vendor_site':
+                        domain = metrics.get('current_page', 'unknown domain')
+                        log_entry = {'type': 'info', 'message': f"Accessing vendor site: {domain}"}
+                    elif status == 'finding_customer_pages':
+                        log_entry = {'type': 'info', 'message': "Searching for customer pages..."}
+                    elif status == 'analyzing_main_page':
+                        log_entry = {'type': 'info', 'message': "Analyzing main page content with Grok..."}
+                    elif status == 'analyzing_customer_pages':
+                        page_index = metrics.get('current_customer_page_index', 0)
+                        total_pages = metrics.get('total_customer_pages', 0)
+                        log_entry = {'type': 'info', 'message': f"Analyzing customer page {page_index}/{total_pages}..."}
+                    elif status == 'analyzing_page_content':
+                        page = metrics.get('current_page', 'unknown page')
+                        log_entry = {'type': 'info', 'message': f"Extracting companies from {page}"}
+                    elif status == 'processing_results':
+                        companies_found = metrics.get('companies_found', 0)
+                        log_entry = {'type': 'success', 'message': f"Found {companies_found} companies so far"}
+                    elif status == 'complete':
+                        companies_found = metrics.get('companies_found', 0)
+                        unique_companies = metrics.get('unique_companies_count', 0) or metrics.get('unique_companies', 0)
+                        log_entry = {'type': 'success', 'message': f"Analysis complete! Found {companies_found} companies, {unique_companies} unique."}
+                    elif status.startswith('error') or status == 'failed':
+                        error_msg = metrics.get('error_message', 'Unknown error')
+                        log_entry = {'type': 'error', 'message': f"Error: {error_msg}"}
+                    
+                    # Add timestamp and save the log entry if we created one
+                    if log_entry:
+                        log_entry['timestamp'] = time.time()
+                        app.job_logs[job_id].append(log_entry)
+                
+                # Do the enhanced search with our callback
+                enhanced_data = enhanced_vendor_search(vendor_name, max_results=5, status_callback=update_status)
+                
+                # Extract results and metrics
+                if hasattr(enhanced_data, 'results') and hasattr(enhanced_data, 'metrics'):
+                    results_data = enhanced_data.results
+                    metrics = enhanced_data.metrics
+                    app_logger.info(f"Enhanced search metrics: {metrics}")
+                    if 'metrics' not in app.job_results[job_id]:
+                        app.job_results[job_id]['metrics'] = {}
+                    app.job_results[job_id]['metrics'].update(metrics)
+                else:
+                    results_data = enhanced_data
+                    app_logger.info("No metrics available from enhanced search")
+                
+                # Update job progress
+                app.job_results[job_id]['progress'] = {
+                    'step': 80, 
+                    'message': 'Combining results...'
+                }
+                
+                # Combine results, preferring enhanced data
+                combined_data = vendor_data.copy()
+                
+                # Add enhanced data, avoiding duplicates
+                existing_names = {item.get('name', '').lower() for item in vendor_data}
+                for item in results_data:
+                    if item.get('name', '').lower() not in existing_names:
+                        combined_data.append(item)
+                
+                # Format the data for the results template
+                formatted_results = []
+                # Limit to maximum 5 results
+                max_to_display = 5
+                
+                for i, item in enumerate(combined_data):
+                    # Only include the first max_to_display items
+                    if i >= max_to_display:
+                        break
+                        
+                    formatted_results.append({
+                        'competitor': vendor_name,
+                        'customer_name': item.get('name', 'Unknown'),
+                        'customer_url': item.get('url', None)
+                    })
+                
+                app_logger.info(f"Found {len(formatted_results)} customers for {vendor_name}")
+                
+                # Update job status with final results
+                app.job_results[job_id].update({
                     'status': 'completed',
-                    'progress': PROGRESS_STEPS['COMPLETE'],
-                    'results': results,
+                    'results': formatted_results,
                     'end_time': time.time(),
-                    'duration': time.time() - job_results[job_id]['start_time']
+                    'duration': time.time() - app.job_results[job_id]['start_time']
                 })
-                worker_logger.info(f"Job {job_id} completed successfully with {len(results)} results")
+                
+                # Add final log entry
+                log_entry = {
+                    'type': 'success', 
+                    'message': f"Analysis complete! Found {len(formatted_results)} customers for {vendor_name}.",
+                    'timestamp': time.time()
+                }
+                app.job_logs[job_id].append(log_entry)
                 
             except Exception as e:
-                worker_logger.exception(f"Error in worker thread processing job {job_id}: {str(e)}")
+                app_logger.exception(f"Error processing job {job_id}: {str(e)}")
+                app.job_results[job_id].update({
+                    'status': 'failed',
+                    'error': str(e),
+                    'end_time': time.time(),
+                    'duration': time.time() - app.job_results[job_id]['start_time']
+                })
                 
-                # Check if we have partial results we can use
-                partial_results = job_results[job_id].get('partial_results', [])
-                if partial_results and len(partial_results) > 0:
-                    worker_logger.info(f"Using {len(partial_results)} partial results despite error")
-                    
-                    # Complete the job with partial results
-                    job_results[job_id].update({
-                        'status': 'completed_with_errors',
-                        'progress': PROGRESS_STEPS['COMPLETE'],
-                        'results': partial_results,
-                        'error': str(e),
-                        'error_details': {
-                            'type': 'recoverable_error',
-                            'partial_results_used': True
-                        },
-                        'end_time': time.time(),
-                        'duration': time.time() - job_results[job_id]['start_time']
-                    })
-                else:
-                    # No partial results available, mark as failed
-                    job_results[job_id].update({
-                        'status': 'failed',
-                        'progress': PROGRESS_STEPS['ERROR'],
-                        'results': [],
-                        'error': str(e),
-                        'error_details': {
-                            'type': 'processing_error'
-                        },
-                        'end_time': time.time(),
-                        'duration': time.time() - job_results[job_id]['start_time']
-                    })
-            finally:
-                job_queue.task_done()
-                
-        except queue.Empty:
-            # Queue is empty, just continue and check again
-            pass
+                # Add error log entry
+                log_entry = {
+                    'type': 'error', 
+                    'message': f"Error: {str(e)}",
+                    'timestamp': time.time()
+                }
+                app.job_logs[job_id].append(log_entry)
+            
+            # Mark task as done in the queue
+            app.job_queue.task_done()
+            
         except Exception as e:
-            worker_logger.exception(f"Unexpected error in worker thread: {str(e)}")
-            # Don't crash the worker thread
-            time.sleep(1)  # Avoid tight loop in case of repeated errors
+            app_logger.exception(f"Unhandled error in background worker: {str(e)}")
+            # Still mark task as done to avoid blocking the queue
+            try:
+                app.job_queue.task_done()
+            except:
+                pass
 
-# Start the worker thread
-worker_thread = threading.Thread(target=worker, daemon=True)
+# Start the background worker thread
+worker_thread = threading.Thread(target=background_worker, daemon=True)
 worker_thread.start()
 
 @app.route('/')
@@ -225,236 +318,88 @@ def analyze():
     # Log the request
     app_logger.info(f"Received request to analyze vendor: {vendor_name}")
     
-    try:
-        # Create a job ID early for tracking
-        job_id = f"{vendor_name}_{int(time.time())}"
-        app_logger.info(f"Created job ID: {job_id}")
-        
-        # Store job ID in session for the user
-        session['job_id'] = job_id
-        
-        # Initialize job status for immediate feedback
-        job_results[job_id] = {
-            'status': 'initializing',
-            'progress': PROGRESS_STEPS['INIT'],
-            'partial_results': [],
-            'results': [],
-            'error': None,
-            'vendor_name': vendor_name,
-            'start_time': time.time(),
-            'validation_status': {
-                'vendor_site': {'status': 'pending'},
-                'featured_customers': {'status': 'pending'},
-                'search_engines': {'status': 'pending'},
-                'combined': {'status': 'pending'}
-            }
-        }
-        
-        # Step 1: Scrape vendor website with validation
-        app_logger.info(f"Scraping vendor site for {vendor_name}")
-        job_results[job_id]['progress'] = PROGRESS_STEPS['SCRAPING']
-        vendor_data = scrape_vendor_site(vendor_name)
-        
-        # Validate vendor data (minimum 1 item with MEDIUM validation)
-        vendor_validation = validate_customer_data(
-            vendor_data, 
-            vendor_name, 
-            min_items=1,
-            level=ValidationLevel.MEDIUM,
-            context={'source': 'vendor_site', 'job_id': job_id}
-        )
-        
-        # Store validation results for client feedback
-        job_results[job_id]['validation_status']['vendor_site'] = {
-            'status': 'valid' if vendor_validation.is_valid else 'invalid',
-            'count': len(vendor_validation.filtered_data),
-            'original_count': len(vendor_data),
-            'reasons': vendor_validation.reasons
-        }
-        
-        # Step 2: Get data from Featured Customers with validation
-        app_logger.info(f"Scraping Featured Customers for {vendor_name}")
-        featured_data = scrape_featured_customers(vendor_name)
-        
-        # Validate featured data (minimum 0 items, just for filtering)
-        featured_validation = validate_customer_data(
-            featured_data, 
-            vendor_name, 
-            min_items=0,
-            level=ValidationLevel.HIGH,
-            context={'source': 'featured_customers', 'job_id': job_id}
-        )
-        
-        # Store validation results
-        job_results[job_id]['validation_status']['featured_customers'] = {
-            'status': 'valid' if featured_validation.is_valid else 'invalid',
-            'count': len(featured_validation.filtered_data),
-            'original_count': len(featured_data),
-            'reasons': featured_validation.reasons
-        }
-        
-        # Step 3: Search Google with validation
-        app_logger.info(f"Searching Google for {vendor_name}")
-        job_results[job_id]['progress'] = PROGRESS_STEPS['SEARCH']
-        google_data = search_google(vendor_name)
-        
-        # Validate search data (minimum 0 items, just for filtering)
-        search_validation = validate_customer_data(
-            google_data, 
-            vendor_name, 
-            min_items=0,
-            level=ValidationLevel.LOW,  # Lower standards for search results
-            context={'source': 'search_engines', 'job_id': job_id}
-        )
-        
-        # Store validation results
-        job_results[job_id]['validation_status']['search_engines'] = {
-            'status': 'valid' if search_validation.is_valid else 'invalid',
-            'count': len(search_validation.filtered_data),
-            'original_count': len(google_data),
-            'reasons': search_validation.reasons
-        }
-        
-        # Step 4: Validate combined data
-        job_results[job_id]['progress'] = PROGRESS_STEPS['PREPARING']
-        app_logger.info(f"Validating combined data for {vendor_name}")
-        
-        # Use filtered data from each source for combined validation
-        combined_validation = validate_combined_data(
-            vendor_validation.filtered_data,
-            featured_validation.filtered_data,
-            search_validation.filtered_data,
-            vendor_name,
-            min_total=3,  # Require at least 3 valid items across all sources
-            level=ValidationLevel.MEDIUM
-        )
-        
-        # Store combined validation results
-        job_results[job_id]['validation_status']['combined'] = {
-            'status': 'valid' if combined_validation.is_valid else 'invalid',
-            'count': len(combined_validation.filtered_data),
-            'original_count': len(vendor_data) + len(featured_data) + len(google_data),
-            'reasons': combined_validation.reasons
-        }
-        
-        # Check if combined data passes validation
-        if not combined_validation.is_valid:
-            # Not enough valid data found - set error in job results
-            error_message = "Insufficient valid customer data found. Please try a different vendor name."
-            app_logger.warning(f"Validation failed for {vendor_name}: {error_message}",
-                             extra={'reasons': combined_validation.reasons})
-            
-            job_results[job_id].update({
-                'status': 'failed',
-                'progress': PROGRESS_STEPS['ERROR'],
-                'error': error_message,
-                'error_details': {
-                    'type': 'validation_error',
-                    'reasons': combined_validation.reasons,
-                    'metrics': combined_validation.metrics
-                }
-            })
-            
-            # Return results page that will show the error
-            return render_template('results.html', 
-                                   vendor_name=vendor_name,
-                                   job_id=job_id,
-                                   results=None,
-                                   polling=True)
-        
-        # Use filtered data for processing
-        filtered_data = combined_validation.filtered_data
-        
-        # Log the filtered combined data
-        app_logger.info(f"Validated combined data for {vendor_name}: {len(filtered_data)} items (from {len(vendor_data) + len(featured_data) + len(google_data)} original)")
-        for item in filtered_data:
-            app_logger.info(f"Validated data item - Name: {item.get('name', 'N/A')}, URL: {item.get('url', 'N/A')}, Source: {item.get('source', 'unknown')}")
-        
-        # Update job status
-        job_results[job_id]['partial_results'] = filtered_data
-        
-        # Add job to queue for background processing with validated data
-        job_queue.put((job_id, vendor_name, filtered_data))
-        app_logger.info(f"Job {job_id} added to queue with {len(filtered_data)} validated items, redirecting to results page")
-        
-        # Immediately return a results page that will check for job completion
-        return render_template('results.html', 
-                               vendor_name=vendor_name,
-                               job_id=job_id,
-                               results=None,  # No results yet
-                               polling=True)  # Indicate that we need to poll for results
+    # Create a job ID for tracking
+    job_id = f"{vendor_name}_{int(time.time())}"
+    app_logger.info(f"Created job ID: {job_id}")
     
-    except Exception as e:
-        app_logger.exception(f"Error analyzing vendor {vendor_name}: {str(e)}")
-        
-        # Initialize job result if it doesn't exist yet
-        if job_id not in job_results:
-            job_results[job_id] = {
-                'status': 'failed',
-                'progress': PROGRESS_STEPS['ERROR'],
-                'partial_results': [],
-                'results': [],
-                'error': str(e),
-                'vendor_name': vendor_name,
-                'start_time': time.time()
-            }
-        else:
-            # Update existing job with error
-            job_results[job_id].update({
-                'status': 'failed',
-                'progress': PROGRESS_STEPS['ERROR'],
-                'error': str(e)
-            })
-            
-        return jsonify({'error': str(e)}), 500
+    # Initialize job in the job results dictionary
+    app.job_results[job_id] = {
+        'status': 'queued',
+        'progress': {
+            'step': 5,
+            'message': f'Waiting to process {vendor_name}...'
+        },
+        'metrics': {
+            'pages_checked': 0,
+            'customer_links_found': 0,
+            'companies_found': 0,
+            'unique_companies': 0,
+            'target_count': 5
+        },
+        'vendor_name': vendor_name,
+        'start_time': time.time()
+    }
+    
+    # Initialize logs for this job
+    app.job_logs[job_id] = []
+    
+    # Add the job to the processing queue
+    app.job_queue.put((job_id, vendor_name))
+    app_logger.info(f"Added job {job_id} to processing queue")
+    
+    # Initial log entry
+    log_entry = {
+        'type': 'info',
+        'message': f"Added {vendor_name} to processing queue...",
+        'timestamp': time.time()
+    }
+    app.job_logs[job_id].append(log_entry)
+    
+    # Return the job ID immediately so the front end can start polling
+    return render_template('results.html',
+                          vendor_name=vendor_name,
+                          job_id=job_id,
+                          polling=True)
 
+
+# Background job processing endpoint that will be called via AJAX
 @app.route('/job_status/<job_id>', methods=['GET'])
 def job_status(job_id):
-    """Check the status of a background job."""
-    if job_id in job_results:
-        job = job_results[job_id]
-        
-        # Common fields to include in all responses
-        response = {
-            'status': job['status'],
-            'progress': job['progress'],
-            'vendor_name': job['vendor_name'],
-            'job_id': job_id,
-            'elapsed_time': time.time() - job['start_time']
-        }
-        
-        # Include validation status if it exists
-        if 'validation_status' in job:
-            response['validation_status'] = job['validation_status']
-        
-        # Status-specific fields
-        if job['status'] == 'completed':
-            # Job is done, return the results
-            response.update({
-                'results': job['results'],
-                'duration': job.get('duration', 0),
-                'partial_results': []  # Clear partial results once complete
-            })
-        elif job['status'] == 'failed':
-            # Job failed, return the error
-            response.update({
-                'error': job['error'],
-                'error_details': job.get('error_details', {}),
-                'partial_results': job.get('partial_results', [])
-            })
+    try:
+        # Get the vendor name from the job ID (format is vendor_timestamp)
+        parts = job_id.split('_')
+        if len(parts) >= 2:
+            vendor_name = parts[0]
         else:
-            # Job is initializing or running
-            response.update({
-                'partial_results': job.get('partial_results', [])
-            })
+            return jsonify({'status': 'error', 'error': 'Invalid job ID format'}), 400
         
-        return jsonify(response)
-    
-    # Job doesn't exist
-    return jsonify({
-        'status': 'pending',
-        'progress': {'step': 0, 'message': 'Waiting to start...'}
-    })
+        # Set request context
+        set_context(vendor_name=vendor_name, request_path=f'/job_status/{job_id}', operation='check_job_status')
+        app_logger = get_logger(LogComponent.APP)
+        
+        # Check if the job exists
+        if job_id not in app.job_results:
+            # This should not happen with our new implementation, but just in case
+            error_msg = f"Job {job_id} not found"
+            app_logger.error(error_msg)
+            return jsonify({'status': 'error', 'error': error_msg}), 404
+        
+        # Return the current status of the job, including the most recent logs (up to 50)
+        response_data = app.job_results[job_id].copy()
+        
+        # Add logs if available
+        if job_id in app.job_logs:
+            # Return most recent 50 logs
+            response_data['logs'] = app.job_logs[job_id][-50:]
+        
+        return jsonify(response_data), 200
+        
+    except Exception as e:
+        app_logger.exception(f"Error checking job status {job_id}: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
