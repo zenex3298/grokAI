@@ -11,7 +11,7 @@ from src.utils.logger import get_logger, LogComponent, set_context, log_data_met
 # Get a logger specifically for the analyzer component
 logger = get_logger(LogComponent.GROK)
 
-def analyze_with_grok(data, vendor_name, progress_callback=None, max_results=5):
+def analyze_with_grok(data, vendor_name, progress_callback=None, max_results=20):
     """
     Analyze collected data using Grok AI.
     
@@ -20,7 +20,7 @@ def analyze_with_grok(data, vendor_name, progress_callback=None, max_results=5):
         vendor_name: Name of the vendor
         progress_callback: Optional callback function to report progress
                           Callback signature: func(stage, partial_results=None, message=None)
-        max_results: Maximum number of results to return (default: 5)
+        max_results: Maximum number of results to return (default: 20)
     """
     try:
         # Report initial progress
@@ -250,7 +250,7 @@ def parse_grok_response(text, vendor_name, max_results=5):
     Args:
         text: The text response from Grok
         vendor_name: The name of the vendor
-        max_results: Maximum number of results to return (default: 5)
+        max_results: Maximum number of results to return (default: 20)
     """
     all_results = []
     
@@ -325,14 +325,14 @@ def parse_grok_response(text, vendor_name, max_results=5):
     
     return results
 
-def process_data_without_grok(data, vendor_name, progress_callback=None, max_results=5):
+def process_data_without_grok(data, vendor_name, progress_callback=None, max_results=20):
     """Process data without using Grok AI.
     
     Args:
         data: List of data items to analyze
         vendor_name: Name of the vendor
         progress_callback: Optional callback function to report progress
-        max_results: Maximum number of results to return (default: 5)
+        max_results: Maximum number of results to return (default: 20)
     """
     # Update progress if callback provided
     if progress_callback:

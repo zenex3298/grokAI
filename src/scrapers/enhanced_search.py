@@ -232,12 +232,12 @@ def format_results(unique_companies_dict, vendor_name, metrics, max_results):
     return SearchResults(limited_results, metrics)
 
 @log_function_call
-def enhanced_vendor_search(vendor_name, max_results=5, status_callback=None):
+def enhanced_vendor_search(vendor_name, max_results=20, status_callback=None):
     """Search vendor site and extract companies using Grok AI.
     
     Args:
         vendor_name: Name of the vendor to search for
-        max_results: Maximum number of results to return (default: 5)
+        max_results: Maximum number of results to return (default: 20)
         status_callback: Optional callback function to update processing status
                         Callback signature: func(metrics: dict) -> None
         
