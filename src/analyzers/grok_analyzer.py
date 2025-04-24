@@ -73,18 +73,35 @@ def analyze_with_grok(data, vendor_name, progress_callback=None):
             
         formatted_data = json.dumps(simplified_data, indent=0)  # Reduce indentation
         
-        # Limit formatted data size if too large
-        if len(formatted_data) > 7000:
-            logger.warning(f"Data too large ({len(formatted_data)} chars), truncating to 7000 chars")
-            formatted_data = formatted_data[:7000] + "..."
+        # Limit formatted data size if too large, but allow more data than before
+        max_chars = 10000  # Increased from 7000 to 10000
+        if len(formatted_data) > max_chars:
+            logger.warning(f"Data too large ({len(formatted_data)} chars), truncating to {max_chars} chars")
+            formatted_data = formatted_data[:max_chars] + "..."
             
-        # Prepare prompt for Grok (shortened)
+        # Prepare enhanced prompt for Grok
         prompt = f"""
         Analyze this customer data for {vendor_name}:
 
         {formatted_data}
 
-        Extract customer names and website URLs. Format each entry as: Customer Name, Website URL
+        TASK: Thoroughly analyze this data and identify ALL company names that appear to be customers or clients of {vendor_name}.
+
+        IMPORTANT: Take your time to analyze the entire content. You MUST spend at least 45-60 seconds analyzing the data.
+        Look for indicators that suggest these companies are customers, such as:
+        - Company names mentioned in testimonial contexts
+        - Companies described as "using" or "choosing" {vendor_name}
+        - Companies listed as case studies or success stories
+        - Any company presented as a customer reference
+
+        Please respond with each customer on a new line, following this format:
+        Company Name
+
+        Only include companies that you believe are actual customers with at least 60% confidence.
+        Do not include {vendor_name} itself or generic terms.
+        
+        You MUST take at least 45-60 seconds to thoroughly process this content before responding.
+        Provide a thorough analysis as your response is critical for business intelligence.
         """
         
         # Call X.AI API with proper authentication (since our key is X.AI format)
@@ -110,16 +127,17 @@ def analyze_with_grok(data, vendor_name, progress_callback=None):
         api_payload = {
             'model': 'grok-3-latest',  # Using Grok model that works in curl
             'messages': [
-                {'role': 'system', 'content': 'You are a helpful assistant that identifies unique customer names and their website URLs from provided data.'},
+                {'role': 'system', 'content': 'You are a helpful assistant that identifies unique customer names from provided data.'},
                 {'role': 'user', 'content': prompt}
             ],
-            'max_tokens': 1000,
-            'temperature': 0  # Lower temperature for more deterministic responses
+            'max_tokens': 2000,  # Increased max tokens for longer responses
+            'temperature': 0,  # Lower temperature for more deterministic responses
+            'timeout': 50      # Add explicit timeout parameter for the model
         }
         
         # Add retry logic - try up to 3 times with increasing timeouts
         max_retries = 3
-        initial_timeout = 20  # Start with 20 seconds
+        initial_timeout = 40  # Increased: Start with 40 seconds timeout
         
         for retry in range(max_retries):
             current_timeout = initial_timeout * (retry + 1)  # Increase timeout with each retry
