@@ -205,8 +205,8 @@ def background_worker():
                         log_entry['timestamp'] = time.time()
                         app.job_logs[job_id].append(log_entry)
                 
-                # Do the enhanced search with our callback
-                enhanced_data = enhanced_vendor_search(vendor_name, max_results=5, status_callback=update_status)
+                # Do the enhanced search with our callback - use higher max_results to get more companies
+                enhanced_data = enhanced_vendor_search(vendor_name, max_results=20, status_callback=update_status)
                 
                 # Extract results and metrics
                 if hasattr(enhanced_data, 'results') and hasattr(enhanced_data, 'metrics'):
@@ -237,20 +237,14 @@ def background_worker():
                 
                 # Format the data for the results template
                 formatted_results = []
-                # Limit to maximum 5 results
-                max_to_display = 5
                 
-                for i, item in enumerate(combined_data):
+                for item in combined_data:
                     # Get the URL from the item
                     url = item.get('url', None)
                     
                     # Skip items without a valid URL
                     if not url:
                         continue
-                        
-                    # Only include the first max_to_display items
-                    if len(formatted_results) >= max_to_display:
-                        break
                         
                     formatted_results.append({
                         'competitor': vendor_name,
@@ -342,7 +336,7 @@ def analyze():
             'customer_links_found': 0,
             'companies_found': 0,
             'unique_companies': 0,
-            'target_count': 5
+            'target_count': 20
         },
         'vendor_name': vendor_name,
         'start_time': time.time()
