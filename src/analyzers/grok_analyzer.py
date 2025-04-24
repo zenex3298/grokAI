@@ -80,25 +80,35 @@ def analyze_with_grok(data, vendor_name, progress_callback=None, max_results=5):
             logger.warning(f"Data too large ({len(formatted_data)} chars), truncating to {max_chars} chars")
             formatted_data = formatted_data[:max_chars] + "..."
             
-        # Prepare enhanced prompt for Grok
+        # Prepare enhanced prompt for Grok with improved filtering
         prompt = f"""
         Analyze this customer data for {vendor_name}:
 
         {formatted_data}
 
-        TASK: Thoroughly analyze this data and identify ALL company names that appear to be customers or clients of {vendor_name}.
+        TASK: Thoroughly analyze this data and identify ONLY legitimate company names that appear to be customers or clients of {vendor_name}.
 
         IMPORTANT: Take your time to analyze the entire content. You MUST spend at least 45-60 seconds analyzing the data.
+        
+        CRITICAL FILTERING INSTRUCTIONS:
+        - DO NOT include navigation menu items, category names, or UI elements
+        - DO NOT include generic headings like "Trusted by" or "Our Customers"
+        - DO NOT include slogans, marketing copy, or promotional text
+        - DO NOT include general phrases that aren't company names
+        - DO NOT include descriptive sections like "Government and Public Sector"
+        - A real company name typically includes terms like Inc, LLC, Ltd, GmbH, or has a distinctive brand name
+        - Focus on names that have actual evidence of being customers in the text
+        
         Look for indicators that suggest these companies are customers, such as:
         - Company names mentioned in testimonial contexts
         - Companies described as "using" or "choosing" {vendor_name}
         - Companies listed as case studies or success stories
-        - Any company presented as a customer reference
+        - Any company presented as a customer reference with clear evidence
 
         Please respond with each customer on a new line, following this format:
         Company Name
 
-        Only include companies that you believe are actual customers with at least 60% confidence.
+        Only include companies that you believe are actual customers with at least 80% confidence.
         Do not include {vendor_name} itself or generic terms.
         
         You MUST take at least 45-60 seconds to thoroughly process this content before responding.

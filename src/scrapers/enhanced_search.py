@@ -49,33 +49,42 @@ def extract_companies_with_grok(text_content, page_url, vendor_name):
         logger.info(f"Truncating page content from {len(text_content)} to {max_chars} chars")
         text_content = text_content[:max_chars]
     
-    # Create enhanced prompt for Grok
+    # Create enhanced prompt for Grok with specific filtering instructions
     prompt = f"""
-    Extract all company names that are customers or clients of {vendor_name} from this webpage content.
+    Extract all ACTUAL company names that are customers or clients of {vendor_name} from this webpage content.
     The page URL is {page_url}.
     
     Here is the page content:
     {text_content}
     
-    TASK: Thoroughly analyze this text and identify ALL company names that appear to be customers or clients of {vendor_name}.
+    TASK: Thoroughly analyze this text and identify ONLY legitimate company names that appear to be customers or clients of {vendor_name}.
     
     IMPORTANT: Take your time to analyze the entire content. You MUST spend at least 45-60 seconds analyzing the text.
     Look for sections with testimonials, case studies, customer logos, "trusted by" sections, and success stories.
     Companies are often mentioned in contexts like "X uses {vendor_name}", "Y chose {vendor_name}", etc.
     
+    CRITICAL FILTERING INSTRUCTIONS:
+    - DO NOT include navigation menu items, category names, or UI elements
+    - DO NOT include generic headings like "Trusted by" or "Our Customers"
+    - DO NOT include slogans, marketing copy, or promotional text
+    - DO NOT include general phrases that aren't company names
+    - DO NOT include descriptive sections like "Government and Public Sector"
+    - A real company name typically includes terms like Inc, LLC, Ltd, GmbH, or has a distinctive brand name
+    - Focus on names that have actual evidence of being customers in the text
+    
     Look for these specific sections:
-    - Customer stories/testimonials
-    - "Trusted by" or "Our customers" sections
-    - Case studies
-    - Logos of companies displayed on the page
-    - Reviews or ratings from companies
+    - Customer stories/testimonials with REAL customer names
+    - "Trusted by" sections that list ACTUAL company names
+    - Case studies that mention SPECIFIC companies by name
+    - Logos of identifiable companies displayed on the page
+    - Reviews or ratings from named organizations
     
     Please respond with a JSON array of objects. Each object should have:
-    1. "company_name": The name of the customer company
+    1. "company_name": The name of the actual customer company
     2. "confidence": A number from 0 to 1 indicating how confident you are that this is a customer
     3. "reason": A brief explanation of why you think this is a customer
 
-    Only include companies that you believe are actual customers with at least 60% confidence.
+    ONLY include companies that you believe are actual customers with at least 80% confidence.
     Do not include {vendor_name} itself or generic terms.
     
     You MUST take at least 45-60 seconds to thoroughly process this content before responding.
@@ -144,9 +153,11 @@ def extract_companies_with_grok(text_content, page_url, vendor_name):
                     confidence = company.get('confidence', 0.7)  # Default confidence
                     reason = company.get('reason', 'Extracted from page content')  # Get reason if available
                     
-                    if confidence >= 0.6:  # Only include companies with sufficient confidence
+                    if confidence >= 0.8:  # Increased threshold from 0.6 to 0.8 to reduce false positives
                         # Generate domain from company name
-                        domain = name.lower().replace(' ', '') + ".com"
+                        # Only use lowercase alphanumeric characters and strip punctuation
+                        clean_name = ''.join(e.lower() for e in name if e.isalnum() or e.isspace())
+                        domain = clean_name.replace(' ', '') + ".com"
                         
                         companies.append({
                             'name': name,
