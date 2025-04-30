@@ -47,12 +47,21 @@ def scrape_featured_customers(vendor_name, max_results=20, status_callback=None)
         status_callback(metrics)
     
     try:
-        # Create a search URL for Featured Customers
-        search_url = f"https://www.featuredcustomers.com/search?q={vendor_name.replace(' ', '+')}" 
-        metrics['search_url'] = search_url
+        # Try multiple URL patterns for Featured Customers
+        search_urls = [
+            f"https://www.featuredcustomers.com/vendors?q={vendor_name.replace(' ', '+')}",  # New format
+            f"https://www.featuredcustomers.com/vendor/{vendor_name.lower().replace(' ', '-')}/customers",  # Direct format
+            f"https://www.featuredcustomers.com/vendor/{vendor_name.lower().replace(' ', '')}/customers",   # Direct format without spaces
+            f"https://www.featuredcustomers.com/vendor/{vendor_name.lower().replace(' ', '-')}"  # Base vendor profile
+        ]
         
-        logger.info(f"Searching FeaturedCustomers for vendor: {vendor_name}", 
-                  extra={'vendor_name': vendor_name, 'search_url': search_url})
+        # Set initial URL to try
+        search_url = search_urls[0]
+        metrics['search_url'] = search_url
+        metrics['all_urls_tried'] = search_urls
+        
+        logger.info(f"Searching FeaturedCustomers using multiple URL patterns for: {vendor_name}", 
+                  extra={'vendor_name': vendor_name, 'primary_url': search_url, 'all_urls': search_urls})
         
         # Update status if callback provided
         if status_callback:
@@ -63,7 +72,7 @@ def scrape_featured_customers(vendor_name, max_results=20, status_callback=None)
         # Make request to search page
         search_start = time.time()
         try:
-            logger.debug(f"Making HTTP request to FeaturedCustomers search: {search_url}")
+            logger.debug(f"Making HTTP request to FeaturedCustomers vendors endpoint: {search_url}")
             response = requests.get(search_url, timeout=10)
             metrics['search_status_code'] = response.status_code
             metrics['search_time'] = time.time() - search_start
@@ -89,11 +98,70 @@ def scrape_featured_customers(vendor_name, max_results=20, status_callback=None)
                 
                 return []
                 
-            logger.debug(f"Successfully loaded FeaturedCustomers search page ({len(response.text)} bytes)",
+            logger.debug(f"Successfully loaded FeaturedCustomers vendors page ({len(response.text)} bytes)",
                        extra={'response_size': len(response.text)})
+                       
+            # Additional debugging to analyze response structure
+            if 'vendor' in response.text.lower() or 'vendors' in response.text.lower():
+                vendor_mentions = response.text.lower().count('vendor')
+                vendors_mentions = response.text.lower().count('vendors')
+                logger.debug(f"Found {vendor_mentions} mentions of 'vendor' and {vendors_mentions} mentions of 'vendors' in response",
+                           extra={'vendor_mentions': vendor_mentions, 'vendors_mentions': vendors_mentions})
+            
+            # Check if this might be a SPA (Single Page Application)
+            if 'react' in response.text.lower() or 'angular' in response.text.lower() or 'vue' in response.text.lower():
+                logger.info("FeaturedCustomers appears to be a Single Page Application (SPA), which may require JavaScript rendering")
+            
+            # Check if we should try fallback URLs
+            all_links = soup.find_all('a', href=True)
+            if len(all_links) == 0 or response.status_code != 200:
+                logger.info("Primary URL didn't yield links, trying fallback URLs")
+                
+                # Try the other URLs in our list
+                for i, fallback_url in enumerate(search_urls[1:], start=1):
+                    logger.info(f"Trying fallback URL #{i}: {fallback_url}")
+                    
+                    try:
+                        fallback_response = requests.get(fallback_url, timeout=10)
+                        fallback_status = fallback_response.status_code
+                        
+                        logger.info(f"Fallback URL #{i} status: {fallback_status}")
+                        
+                        if fallback_status == 200:
+                            # Check if this response has more links
+                            fallback_soup = BeautifulSoup(fallback_response.text, 'html.parser')
+                            fallback_links = fallback_soup.find_all('a', href=True)
+                            
+                            logger.info(f"Fallback URL #{i} found {len(fallback_links)} links")
+                            
+                            if len(fallback_links) > len(all_links):
+                                logger.info(f"Switching to fallback URL #{i} which has more links")
+                                # Use this response instead
+                                response = fallback_response
+                                soup = fallback_soup
+                                search_url = fallback_url
+                                metrics['search_url'] = fallback_url
+                                metrics['fallback_used'] = True
+                                metrics['fallback_index'] = i
+                                break
+                    except Exception as e:
+                        logger.warning(f"Fallback URL #{i} error: {str(e)}")
+                        continue
+            
+            # Check for JSON data that might contain profile information
+            json_start = response.text.find('{')
+            json_end = response.text.rfind('}')
+            if json_start >= 0 and json_end > json_start:
+                try:
+                    # Extract the JSON part and log it for analysis
+                    json_part = response.text[json_start:json_end+1]
+                    if len(json_part) < 1000:  # Only log reasonable-sized JSON
+                        logger.debug(f"Found potential JSON data: {json_part}")
+                except Exception as json_err:
+                    logger.debug(f"Error parsing JSON data: {str(json_err)}")
                 
         except requests.exceptions.RequestException as e:
-            logger.error(f"Request error accessing FeaturedCustomers search: {str(e)}",
+            logger.error(f"Request error accessing FeaturedCustomers vendors endpoint: {str(e)}",
                        extra={'error_type': type(e).__name__, 'url': search_url})
             metrics['status'] = 'failed'
             metrics['failure_reason'] = f"Search request error: {type(e).__name__}"
@@ -118,24 +186,55 @@ def scrape_featured_customers(vendor_name, max_results=20, status_callback=None)
         vendor_profile = None
         vendor_slug = vendor_name.lower().replace(' ', '-')
         
+        # For debugging purposes, log all links found in the response
+        all_links = soup.find_all('a', href=True)
+        logger.debug(f"Found {len(all_links)} links in the response")
+        
+        # Log a sample of the first 10 links for debugging
+        link_sample = [(link['href'], link.get_text().strip()[:30]) for link in all_links[:10]]
+        logger.debug(f"Sample of first 10 links: {link_sample}")
+        
         # Track all potential matching links for diagnostics
         potential_links = []
         
+        # Look for links to vendor profiles - format could be either /vendor/ or /vendors/ with the updated endpoint
         for link in soup.find_all('a', href=True):
             href = link['href']
             text = link.get_text().lower()
             
-            if f"/vendor/{vendor_slug}" in href or vendor_name.lower() in text:
+            # Check for both old and new URL formats
+            # More flexible matching to catch different HTML structures
+            if (f"/vendor/{vendor_slug}" in href or 
+                f"/vendors/{vendor_slug}" in href or
+                f"vendors/{vendor_slug}" in href or
+                vendor_name.lower() in text or
+                (vendor_name.lower() in href and ('profile' in href or 'vendor' in href))):
+                
+                match_type = 'unknown'
+                if f"/vendor/{vendor_slug}" in href:
+                    match_type = 'exact_old_format'
+                elif f"/vendors/{vendor_slug}" in href:
+                    match_type = 'exact_new_format'
+                elif vendor_name.lower() in text:
+                    match_type = 'partial_text_match'
+                
                 potential_links.append({
                     'href': href,
                     'text': text,
-                    'match_type': 'exact' if f"/vendor/{vendor_slug}" in href else 'partial'
+                    'match_type': match_type
                 })
                 
                 if not vendor_profile:  # Take the first match
-                    vendor_profile = f"https://www.featuredcustomers.com{href}"
+                    # Add domain if it's a relative URL
+                    if href.startswith('/'):
+                        vendor_profile = f"https://www.featuredcustomers.com{href}"
+                    elif href.startswith('http'):
+                        vendor_profile = href
+                    else:
+                        vendor_profile = f"https://www.featuredcustomers.com/{href}"
+                        
                     logger.info(f"Found vendor profile: {vendor_profile}",
-                               extra={'vendor_name': vendor_name, 'profile_url': vendor_profile})
+                               extra={'vendor_name': vendor_name, 'profile_url': vendor_profile, 'match_type': match_type})
         
         # Log all potential matches for diagnostics
         if len(potential_links) > 1:
