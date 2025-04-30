@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from src.scrapers.vendor_site import scrape_vendor_site
 from src.scrapers.enhanced_search import enhanced_vendor_search
 from src.scrapers.featured_customers import scrape_featured_customers
+from src.scrapers.search_engines import search_google
 from src.utils.data_validator import validate_combined_data
 from src.utils.logger import setup_logging, get_logger, LogComponent, set_context
 
@@ -296,6 +297,82 @@ def background_worker():
                         log_entry['timestamp'] = time.time()
                         app.job_logs[job_id].append(log_entry)
                 
+                # Create status callback for Google Search
+                def google_search_callback(metrics):
+                    # Update metrics
+                    if 'metrics' not in app.job_results[job_id]:
+                        app.job_results[job_id]['metrics'] = {}
+                    
+                    # Store Google Search metrics in a separate section
+                    if 'google_search' not in app.job_results[job_id]['metrics']:
+                        app.job_results[job_id]['metrics']['google_search'] = {}
+                    
+                    app.job_results[job_id]['metrics']['google_search'].update(metrics.copy() if metrics else {})
+                    
+                    # Update status based on metrics
+                    status = metrics.get('status', '')
+                    if status == 'success' or status == 'complete':
+                        # Don't change overall job status when this particular search completes
+                        pass
+                    elif status == 'error' or status == 'failed':
+                        # Only update status for errors
+                        app.job_results[job_id]['status'] = 'running'  # Keep running even if this part fails
+                    
+                    # Generate appropriate message
+                    message = "Processing Google Search..."
+                    if status == 'started':
+                        message = f"Starting Google search for {vendor_name}..."
+                    elif status == 'fallback_basic':
+                        message = f"Using basic Google search for {vendor_name}..."
+                    elif 'queries_run' in metrics and 'queries_successful' in metrics:
+                        message = f"Running Google searches... {metrics.get('queries_successful', 0)}/{metrics.get('queries_run', 0)} complete"
+                    elif status == 'success':
+                        message = f"Google search complete! Found {metrics.get('unique_customers', 0)} customers."
+                    elif status == 'empty':
+                        message = f"Google search complete but found no results."
+                    elif status == 'error' or status == 'failed':
+                        message = f"Google search error: {metrics.get('error_message', 'Unknown error')}"
+                    
+                    # Calculate progress - Google search takes 40-60% of progress bar
+                    progress_step = 40
+                    if status == 'success' or status == 'complete' or status == 'empty':
+                        progress_step = 60
+                    elif status == 'error' or status == 'failed':
+                        progress_step = 60
+                    elif 'queries_run' in metrics and 'queries_successful' in metrics and len(metrics.get('query_metrics', [])) > 0:
+                        queries_ratio = min(1.0, metrics['queries_run'] / len(metrics.get('query_metrics', [])))
+                        progress_step = 40 + int(queries_ratio * 20)
+                    
+                    # Don't decrease progress
+                    current_progress = app.job_results[job_id]['progress'].get('step', 0)
+                    if progress_step > current_progress:
+                        app.job_results[job_id]['progress'] = {
+                            'step': progress_step,
+                            'message': message
+                        }
+                    
+                    # Add log entry for significant events
+                    log_entry = None
+                    if status == 'started':
+                        log_entry = {'type': 'info', 'message': f"Starting Google search for {vendor_name}..."}
+                    elif status == 'fallback_basic':
+                        log_entry = {'type': 'info', 'message': f"Using basic Google search for {vendor_name}..."}
+                    elif 'customers_found' in metrics and metrics.get('customers_found', 0) > 0 and metrics.get('customers_found', 0) % 5 == 0:
+                        # Log every 5 customers found
+                        customers_found = metrics.get('customers_found', 0)
+                        log_entry = {'type': 'success', 'message': f"Google Search: found {customers_found} customers so far"}
+                    elif status == 'success' or status == 'complete':
+                        customers_found = metrics.get('unique_customers', 0)
+                        log_entry = {'type': 'success', 'message': f"Google search complete! Found {customers_found} unique customers."}
+                    elif status == 'error' or status == 'failed':
+                        error_msg = metrics.get('error_message', 'Unknown error')
+                        log_entry = {'type': 'error', 'message': f"Google search error: {error_msg}"}
+                    
+                    # Add timestamp and save the log entry if we created one
+                    if log_entry:
+                        log_entry['timestamp'] = time.time()
+                        app.job_logs[job_id].append(log_entry)
+                
                 # Log entries for starting parallel searches
                 log_entry = {'type': 'info', 'message': f"Starting enhanced search with Grok for {vendor_name}...", 'timestamp': time.time()}
                 app.job_logs[job_id].append(log_entry)
@@ -303,11 +380,17 @@ def background_worker():
                 log_entry = {'type': 'info', 'message': f"Starting FeaturedCustomers search for {vendor_name}...", 'timestamp': time.time()}
                 app.job_logs[job_id].append(log_entry)
                 
+                log_entry = {'type': 'info', 'message': f"Starting Google search for {vendor_name}...", 'timestamp': time.time()}
+                app.job_logs[job_id].append(log_entry)
+                
                 # Do the enhanced search with our callback
                 enhanced_data = enhanced_vendor_search(vendor_name, max_results=20, status_callback=enhanced_search_callback)
                 
                 # Do the FeaturedCustomers search with our callback
                 featured_data = scrape_featured_customers(vendor_name, max_results=20, status_callback=featured_customers_callback)
+                
+                # Do the Google search with our callback
+                google_data = search_google(vendor_name, status_callback=google_search_callback)
                 
                 # Extract results and metrics from enhanced search
                 if hasattr(enhanced_data, 'results') and hasattr(enhanced_data, 'metrics'):
@@ -330,15 +413,17 @@ def background_worker():
                 # Log entry for combining results
                 log_entry = {'type': 'info', 
                            'message': f"Combining results from vendor site ({len(vendor_data)} items), " +
-                                     f"enhanced search ({len(results_data)} items), and " +
-                                     f"FeaturedCustomers ({len(featured_data)} items)",
+                                     f"enhanced search ({len(results_data)} items), " +
+                                     f"FeaturedCustomers ({len(featured_data)} items), and " +
+                                     f"Google search ({len(google_data)} items)",
                            'timestamp': time.time()}
                 app.job_logs[job_id].append(log_entry)
                 
                 # Combine results from all sources
                 app_logger.info(f"Combining results from vendor site ({len(vendor_data)} items), " +
-                               f"enhanced search ({len(results_data)} items), and " +
-                               f"FeaturedCustomers ({len(featured_data)} items)")
+                               f"enhanced search ({len(results_data)} items), " +
+                               f"FeaturedCustomers ({len(featured_data)} items), and " +
+                               f"Google search ({len(google_data)} items)")
                 
                 # Start with vendor data
                 combined_data = vendor_data.copy()
@@ -352,6 +437,12 @@ def background_worker():
                 
                 # Add FeaturedCustomers data, avoiding duplicates
                 for item in featured_data:
+                    if item.get('name', '').lower() not in existing_names:
+                        combined_data.append(item)
+                        existing_names.add(item.get('name', '').lower())
+                
+                # Add Google search data, avoiding duplicates
+                for item in google_data:
                     if item.get('name', '').lower() not in existing_names:
                         combined_data.append(item)
                         existing_names.add(item.get('name', '').lower())

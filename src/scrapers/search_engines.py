@@ -12,7 +12,7 @@ from src.utils.logger import get_logger, LogComponent, set_context, log_data_met
 logger = get_logger(LogComponent.SEARCH)
 
 @log_function_call
-def search_google(vendor_name):
+def search_google(vendor_name, status_callback=None):
     """Search Google for customer information."""
     # Set the context for this operation
     set_context(vendor_name=vendor_name, operation="google_search_scrape")
@@ -32,6 +32,10 @@ def search_google(vendor_name):
         'query_metrics': []
     }
     
+    # Call status callback if provided
+    if status_callback:
+        status_callback(metrics)
+    
     try:
         logger.info(f"Starting Google search for vendor: {vendor_name}", 
                   extra={'vendor_name': vendor_name})
@@ -46,11 +50,15 @@ def search_google(vendor_name):
             metrics['status'] = 'fallback_basic'
             metrics['using_basic_search'] = True
             
+            # Call status callback if provided
+            if status_callback:
+                status_callback(metrics)
+            
             # Log metrics and return basic search results
             metrics['end_time'] = time.time()
             metrics['duration'] = metrics['end_time'] - metrics['start_time']
             log_data_metrics(logger, "google_search_scrape", metrics)
-            return basic_search(vendor_name)
+            return basic_search(vendor_name, status_callback)
         
         metrics['using_api'] = True
         
@@ -180,6 +188,10 @@ def search_google(vendor_name):
             query_metric['duration'] = query_metric['end_time'] - query_metric['start_time']
             query_metrics.append(query_metric)
             
+            # Call status callback if provided
+            if status_callback:
+                status_callback(metrics.copy())
+                
             metrics['queries_run'] += 1
         
         # Store query metrics in the overall metrics
@@ -201,6 +213,10 @@ def search_google(vendor_name):
         metrics['status'] = 'success' if len(deduplicated_results) > 0 else 'empty'
         log_data_metrics(logger, "google_search_scrape", metrics)
         
+        # Final status callback
+        if status_callback:
+            status_callback(metrics.copy())
+        
         logger.info(f"Completed Google search for {vendor_name}. Found {len(deduplicated_results)} unique customers from {metrics['queries_successful']} successful queries.",
                   extra={'vendor_name': vendor_name, 
                          'customer_count': len(deduplicated_results),
@@ -219,6 +235,10 @@ def search_google(vendor_name):
         metrics['error_type'] = type(e).__name__
         metrics['error_message'] = str(e)
         log_data_metrics(logger, "google_search_scrape", metrics)
+        
+        # Error status callback
+        if status_callback:
+            status_callback(metrics.copy())
         
         return []
 
@@ -343,7 +363,7 @@ def google_search(query: str) -> list:
         return []
 
 @log_function_call
-def basic_search(vendor_name):
+def basic_search(vendor_name, status_callback=None):
     """Basic search function without using Google API."""
     # Set the context for this operation
     set_context(vendor_name=vendor_name, operation="basic_search")
@@ -354,6 +374,10 @@ def basic_search(vendor_name):
         'vendor_name': vendor_name,
         'status': 'started'
     }
+    
+    # Initial status callback
+    if status_callback:
+        status_callback(metrics.copy())
     
     try:
         logger.warning("Using basic search function - limited results",
@@ -393,7 +417,12 @@ def basic_search(vendor_name):
         metrics['duration'] = metrics['end_time'] - metrics['start_time']
         metrics['status'] = 'success'
         metrics['results_count'] = len(results)
+        metrics['unique_customers'] = len(results)
         log_data_metrics(logger, "basic_search", metrics)
+        
+        # Final status callback
+        if status_callback:
+            status_callback(metrics.copy())
         
         logger.info(f"Basic search returning {len(results)} results for {vendor_name}",
                   extra={'vendor_name': vendor_name, 'count': len(results)})
@@ -411,6 +440,10 @@ def basic_search(vendor_name):
         metrics['error_type'] = type(e).__name__
         metrics['error_message'] = str(e)
         log_data_metrics(logger, "basic_search", metrics)
+        
+        # Error status callback
+        if status_callback:
+            status_callback(metrics.copy())
         
         # Return empty list on error
         return []
