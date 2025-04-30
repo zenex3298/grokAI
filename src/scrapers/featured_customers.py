@@ -49,7 +49,8 @@ def scrape_featured_customers(vendor_name, max_results=20, status_callback=None)
     try:
         # Try multiple URL patterns for Featured Customers
         search_urls = [
-            f"https://www.featuredcustomers.com/vendors?q={vendor_name.replace(' ', '+')}",  # New format
+            f"https://www.featuredcustomers.com/vendors/all/all?q={vendor_name.replace(' ', '+')}",  # Primary format per user instruction
+            f"https://www.featuredcustomers.com/vendors?q={vendor_name.replace(' ', '+')}",  # Alternative search format
             f"https://www.featuredcustomers.com/vendor/{vendor_name.lower().replace(' ', '-')}/customers",  # Direct format
             f"https://www.featuredcustomers.com/vendor/{vendor_name.lower().replace(' ', '')}/customers",   # Direct format without spaces
             f"https://www.featuredcustomers.com/vendor/{vendor_name.lower().replace(' ', '-')}"  # Base vendor profile
@@ -60,7 +61,7 @@ def scrape_featured_customers(vendor_name, max_results=20, status_callback=None)
         metrics['search_url'] = search_url
         metrics['all_urls_tried'] = search_urls
         
-        logger.info(f"Searching FeaturedCustomers using multiple URL patterns for: {vendor_name}", 
+        logger.info(f"Searching FeaturedCustomers starting with vendors/all/all URL pattern for: {vendor_name}", 
                   extra={'vendor_name': vendor_name, 'primary_url': search_url, 'all_urls': search_urls})
         
         # Update status if callback provided
@@ -72,7 +73,7 @@ def scrape_featured_customers(vendor_name, max_results=20, status_callback=None)
         # Make request to search page
         search_start = time.time()
         try:
-            logger.debug(f"Making HTTP request to FeaturedCustomers vendors endpoint: {search_url}")
+            logger.debug(f"Making HTTP request to FeaturedCustomers vendors/all/all endpoint: {search_url}")
             response = requests.get(search_url, timeout=10)
             metrics['search_status_code'] = response.status_code
             metrics['search_time'] = time.time() - search_start
