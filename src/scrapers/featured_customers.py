@@ -4,13 +4,23 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 
 from src.utils.logger import get_logger, LogComponent, set_context, log_data_metrics, log_function_call
+from src.analyzers.grok_analyzer import cleanup_url
 
 # Get a logger specifically for the featured customers component
 logger = get_logger(LogComponent.FEATURED)
 
 @log_function_call
-def scrape_featured_customers(vendor_name):
-    """Scrape FeaturedCustomers.com for information about the vendor's customers."""
+def scrape_featured_customers(vendor_name, max_results=20, status_callback=None):
+    """Scrape FeaturedCustomers.com for information about the vendor's customers.
+    
+    Args:
+        vendor_name: Name of the vendor to search for
+        max_results: Maximum number of results to return (default: 20)
+        status_callback: Optional callback function to update processing status
+    
+    Returns:
+        List of dictionaries containing customer data with name, url, and source fields
+    """
     # Set the context for this operation
     set_context(vendor_name=vendor_name, operation="featured_customers_scrape")
     
@@ -27,8 +37,14 @@ def scrape_featured_customers(vendor_name):
         'sections_found': 0,
         'customers_found': 0,
         'status': 'started',
-        'has_vendor_profile': False
+        'has_vendor_profile': False,
+        'target_count': max_results
     }
+    
+    # Update status if callback provided
+    if status_callback:
+        metrics['status'] = 'featured_customers_started'
+        status_callback(metrics)
     
     try:
         # Create a search URL for Featured Customers
@@ -37,6 +53,12 @@ def scrape_featured_customers(vendor_name):
         
         logger.info(f"Searching FeaturedCustomers for vendor: {vendor_name}", 
                   extra={'vendor_name': vendor_name, 'search_url': search_url})
+        
+        # Update status if callback provided
+        if status_callback:
+            metrics['status'] = 'featured_customers_searching'
+            metrics['current_page'] = search_url
+            status_callback(metrics)
         
         # Make request to search page
         search_start = time.time()
@@ -49,9 +71,22 @@ def scrape_featured_customers(vendor_name):
             if response.status_code != 200:
                 logger.warning(f"Failed to access FeaturedCustomers, status code: {response.status_code}",
                              extra={'vendor_name': vendor_name, 'status_code': response.status_code, 'url': search_url})
-                metrics['status'] = 'failed'
-                metrics['failure_reason'] = f"Search HTTP {response.status_code}"
+                
+                # Special handling for 410 Gone status - site structure might have changed
+                if response.status_code == 410:
+                    logger.warning("FeaturedCustomers returned 410 Gone. The site structure might have changed.")
+                    metrics['status'] = 'failed'
+                    metrics['failure_reason'] = "FeaturedCustomers API structure has changed (410 Gone)"
+                else:
+                    metrics['status'] = 'failed'
+                    metrics['failure_reason'] = f"Search HTTP {response.status_code}"
+                
                 log_data_metrics(logger, "featured_customers_scrape", metrics)
+                
+                # Update status if callback provided
+                if status_callback:
+                    status_callback(metrics)
+                
                 return []
                 
             logger.debug(f"Successfully loaded FeaturedCustomers search page ({len(response.text)} bytes)",
@@ -63,10 +98,20 @@ def scrape_featured_customers(vendor_name):
             metrics['status'] = 'failed'
             metrics['failure_reason'] = f"Search request error: {type(e).__name__}"
             log_data_metrics(logger, "featured_customers_scrape", metrics)
+            
+            # Update status if callback provided
+            if status_callback:
+                status_callback(metrics)
+            
             return []
         
         # Parse HTML
         soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Update status if callback provided
+        if status_callback:
+            metrics['status'] = 'featured_customers_parsing_search'
+            status_callback(metrics)
         
         # Find vendor profile link (if exists)
         logger.debug(f"Searching for vendor profile for {vendor_name} in search results")
@@ -97,6 +142,7 @@ def scrape_featured_customers(vendor_name):
             logger.debug(f"Found multiple potential profile links for {vendor_name}: {potential_links}",
                         extra={'vendor_name': vendor_name, 'link_count': len(potential_links)})
         
+        # Check for vendor profile
         if not vendor_profile:
             logger.info(f"No vendor profile found for {vendor_name} on FeaturedCustomers",
                        extra={'vendor_name': vendor_name})
@@ -104,10 +150,21 @@ def scrape_featured_customers(vendor_name):
             metrics['end_time'] = time.time()
             metrics['duration'] = metrics['end_time'] - metrics['start_time']
             log_data_metrics(logger, "featured_customers_scrape", metrics)
+            
+            # Update status if callback provided
+            if status_callback:
+                status_callback(metrics)
+            
             return []
         
         metrics['has_vendor_profile'] = True
         metrics['profile_url'] = vendor_profile
+        
+        # Update status if callback provided
+        if status_callback:
+            metrics['status'] = 'featured_customers_accessing_profile'
+            metrics['current_page'] = vendor_profile
+            status_callback(metrics)
         
         # Access vendor profile
         profile_start = time.time()
@@ -121,9 +178,22 @@ def scrape_featured_customers(vendor_name):
                 logger.warning(f"Failed to access vendor profile, status code: {profile_response.status_code}",
                              extra={'vendor_name': vendor_name, 'status_code': profile_response.status_code, 
                                     'url': vendor_profile})
-                metrics['status'] = 'failed'
-                metrics['failure_reason'] = f"Profile HTTP {profile_response.status_code}"
+                
+                # Special handling for 410 Gone status - site structure might have changed
+                if profile_response.status_code == 410:
+                    logger.warning("FeaturedCustomers profile returned 410 Gone. The site structure might have changed.")
+                    metrics['status'] = 'failed'
+                    metrics['failure_reason'] = "FeaturedCustomers profile structure has changed (410 Gone)"
+                else:
+                    metrics['status'] = 'failed'
+                    metrics['failure_reason'] = f"Profile HTTP {profile_response.status_code}"
+                
                 log_data_metrics(logger, "featured_customers_scrape", metrics)
+                
+                # Update status if callback provided
+                if status_callback:
+                    status_callback(metrics)
+                
                 return []
                 
             logger.debug(f"Successfully loaded vendor profile page ({len(profile_response.text)} bytes)",
@@ -135,9 +205,19 @@ def scrape_featured_customers(vendor_name):
             metrics['status'] = 'failed'
             metrics['failure_reason'] = f"Profile request error: {type(e).__name__}"
             log_data_metrics(logger, "featured_customers_scrape", metrics)
+            
+            # Update status if callback provided
+            if status_callback:
+                status_callback(metrics)
+            
             return []
         
         profile_soup = BeautifulSoup(profile_response.text, 'html.parser')
+        
+        # Update status if callback provided
+        if status_callback:
+            metrics['status'] = 'featured_customers_parsing_profile'
+            status_callback(metrics)
         
         # Look for customer section
         logger.info(f"Searching for customer sections in vendor profile")
@@ -170,6 +250,13 @@ def scrape_featured_customers(vendor_name):
             section_class = section.get('class', ['unknown'])
             logger.debug(f"Processing customer section {i+1}/{len(customer_sections)}: {section_id} {section_class}")
             
+            # Update status if callback provided
+            if status_callback:
+                metrics['status'] = 'featured_customers_processing_section'
+                metrics['current_section'] = i + 1
+                metrics['total_sections'] = len(customer_sections)
+                status_callback(metrics)
+            
             # Extract customer names
             customer_elems = section.find_all(['h3', 'h4', 'div', 'span'], 
                                             class_=lambda c: c and 'name' in str(c).lower())
@@ -186,7 +273,7 @@ def scrape_featured_customers(vendor_name):
                     if parent:
                         link = parent.find('a', href=True)
                         if link and 'http' in link['href']:
-                            url = link['href']
+                            url = cleanup_url(link['href'])  # Use the same cleanup as in other scraping
                             logger.debug(f"Found URL for customer {name}: {url}")
                     
                     customer_data.append({
@@ -197,10 +284,44 @@ def scrape_featured_customers(vendor_name):
                     logger.info(f"Found customer from FeaturedCustomers: {name}",
                                extra={'customer_name': name, 'customer_url': url})
                     metrics['customers_found'] += 1
+                    
+                    # Update status if callback provided
+                    if status_callback:
+                        metrics['status'] = 'featured_customers_found'
+                        metrics['companies_found'] = metrics['customers_found']
+                        status_callback(metrics)
+                    
+                    # Check if we've reached the max_results
+                    if metrics['customers_found'] >= max_results:
+                        logger.info(f"Reached maximum result count ({max_results}), stopping search")
+                        
+                        # Add early exit metrics
+                        metrics['early_exit'] = True
+                        metrics['reason'] = f"Reached max_results: {max_results}"
+                        
+                        # Final metrics
+                        metrics['end_time'] = time.time()
+                        metrics['duration'] = metrics['end_time'] - metrics['start_time']
+                        metrics['customers_found'] = len(customer_data)
+                        metrics['status'] = 'success'
+                        log_data_metrics(logger, "featured_customers_scrape", metrics)
+                        
+                        # Final status update
+                        if status_callback:
+                            metrics['status'] = 'complete'
+                            status_callback(metrics)
+                        
+                        return customer_data[:max_results]  # Return only up to max_results
         
         # If no customers found via specific sections, try extracting from testimonials
         if len(customer_data) == 0:
             logger.info("No customers found in dedicated sections, trying to extract from testimonials")
+            
+            # Update status if callback provided
+            if status_callback:
+                metrics['status'] = 'featured_customers_searching_testimonials'
+                status_callback(metrics)
+            
             testimonials = profile_soup.find_all(['div', 'blockquote'], 
                                                 class_=lambda c: c and 'testimonial' in str(c).lower())
             
@@ -213,14 +334,31 @@ def scrape_featured_customers(vendor_name):
                 if author:
                     name = author.get_text().strip()
                     if name and len(name) > 2:
+                        # Try to find associated URL
+                        url = None
+                        link = testimonial.find('a', href=True)
+                        if link and 'http' in link['href']:
+                            url = cleanup_url(link['href'])
+                        
                         customer_data.append({
                             'name': name,
-                            'url': None,
+                            'url': url,
                             'source': "FeaturedCustomers - Testimonial"
                         })
                         logger.info(f"Found customer from testimonial: {name}",
                                   extra={'customer_name': name, 'source': 'testimonial'})
                         metrics['customers_found'] += 1
+                        
+                        # Update status if callback provided
+                        if status_callback:
+                            metrics['status'] = 'featured_customers_found'
+                            metrics['companies_found'] = metrics['customers_found']
+                            status_callback(metrics)
+                        
+                        # Check if we've reached the max_results
+                        if metrics['customers_found'] >= max_results:
+                            logger.info(f"Reached maximum result count ({max_results}), stopping search")
+                            break
             
             metrics['extracted_from_testimonials'] = len(testimonials)
         
@@ -234,7 +372,14 @@ def scrape_featured_customers(vendor_name):
         logger.info(f"Completed FeaturedCustomers scraping for {vendor_name}. Found {len(customer_data)} customers.",
                   extra={'vendor_name': vendor_name, 'customer_count': len(customer_data)})
         
-        return customer_data
+        # Final status update
+        if status_callback:
+            metrics['status'] = 'complete'
+            metrics['companies_found'] = metrics['customers_found']
+            status_callback(metrics)
+        
+        # Return all results up to max_results
+        return customer_data[:max_results]
     
     except Exception as e:
         logger.exception(f"Error scraping FeaturedCustomers for {vendor_name}: {str(e)}",
@@ -247,5 +392,10 @@ def scrape_featured_customers(vendor_name):
         metrics['error_type'] = type(e).__name__
         metrics['error_message'] = str(e)
         log_data_metrics(logger, "featured_customers_scrape", metrics)
+        
+        # Final error status update
+        if status_callback:
+            metrics['status'] = 'error'
+            status_callback(metrics)
         
         return []

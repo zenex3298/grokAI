@@ -6,6 +6,8 @@ from flask import Flask, render_template, request, jsonify
 from dotenv import load_dotenv
 from src.scrapers.vendor_site import scrape_vendor_site
 from src.scrapers.enhanced_search import enhanced_vendor_search
+from src.scrapers.featured_customers import scrape_featured_customers
+from src.utils.data_validator import validate_combined_data
 from src.utils.logger import setup_logging, get_logger, LogComponent, set_context
 
 # Load environment variables
@@ -114,16 +116,16 @@ def background_worker():
                 
                 # Update progress after vendor site scraping
                 app.job_results[job_id]['progress'] = {
-                    'step': 50,
-                    'message': f'Running enhanced search with Grok for {vendor_name}...'
+                    'step': 40,
+                    'message': f'Running parallel searches for {vendor_name}...'
                 }
                 
-                # Log entry for enhanced search
-                log_entry = {'type': 'info', 'message': f"Running enhanced search with Grok for {vendor_name}...", 'timestamp': time.time()}
+                # Log entry for parallel searches
+                log_entry = {'type': 'info', 'message': f"Running parallel searches for {vendor_name}...", 'timestamp': time.time()}
                 app.job_logs[job_id].append(log_entry)
                 
-                # Step 2: Do enhanced search with status callback
-                def update_status(metrics):
+                # Create a common status update function for all scrapers
+                def enhanced_search_callback(metrics):
                     # Update metrics
                     if 'metrics' not in app.job_results[job_id]:
                         app.job_results[job_id]['metrics'] = {}
@@ -131,7 +133,7 @@ def background_worker():
                     
                     # Update status based on metrics
                     status = metrics.get('status', '')
-                    app.job_results[job_id]['status'] = status if status != 'complete' else 'completed'
+                    app.job_results[job_id]['status'] = status if status != 'complete' else 'running'
                     
                     # Generate appropriate message
                     message = "Processing..."
@@ -152,24 +154,27 @@ def background_worker():
                     elif status == 'processing_results':
                         message = f"Processing results... Found {metrics.get('companies_found', 0)} companies so far"
                     elif status == 'complete':
-                        message = f"Analysis complete! Found {metrics.get('companies_found', 0)} companies."
+                        message = f"Enhanced search complete! Found {metrics.get('companies_found', 0)} companies."
                     elif status == 'error' or status.startswith('error'):
                         message = f"Error: {metrics.get('error_message', 'Unknown error occurred')}"
                     
-                    # Update progress
-                    progress_step = 50
+                    # Update progress - Grok search takes 40-60% of progress bar
+                    progress_step = 40
                     if status == 'complete':
-                        progress_step = 80
+                        progress_step = 60
                     elif status.startswith('error'):
-                        progress_step = 80
+                        progress_step = 60
                     elif 'companies_found' in metrics and 'target_count' in metrics and metrics['target_count'] > 0:
                         companies_ratio = min(1.0, metrics['companies_found'] / metrics['target_count'])
-                        progress_step = 50 + int(companies_ratio * 30)
+                        progress_step = 40 + int(companies_ratio * 20)
                     
-                    app.job_results[job_id]['progress'] = {
-                        'step': progress_step,
-                        'message': message
-                    }
+                    # Don't decrease progress
+                    current_progress = app.job_results[job_id]['progress'].get('step', 0)
+                    if progress_step > current_progress:
+                        app.job_results[job_id]['progress'] = {
+                            'step': progress_step,
+                            'message': message
+                        }
                     
                     # Add log entry if needed
                     log_entry = None
@@ -191,24 +196,120 @@ def background_worker():
                         log_entry = {'type': 'info', 'message': f"Extracting companies from {page}"}
                     elif status == 'processing_results':
                         companies_found = metrics.get('companies_found', 0)
-                        log_entry = {'type': 'success', 'message': f"Found {companies_found} companies so far"}
+                        log_entry = {'type': 'success', 'message': f"Enhanced search: found {companies_found} companies so far"}
                     elif status == 'complete':
                         companies_found = metrics.get('companies_found', 0)
                         unique_companies = metrics.get('unique_companies_count', 0) or metrics.get('unique_companies', 0)
-                        log_entry = {'type': 'success', 'message': f"Analysis complete! Found {companies_found} companies, {unique_companies} unique."}
+                        log_entry = {'type': 'success', 'message': f"Enhanced search complete! Found {companies_found} companies, {unique_companies} unique."}
                     elif status.startswith('error') or status == 'failed':
                         error_msg = metrics.get('error_message', 'Unknown error')
-                        log_entry = {'type': 'error', 'message': f"Error: {error_msg}"}
+                        log_entry = {'type': 'error', 'message': f"Enhanced search error: {error_msg}"}
                     
                     # Add timestamp and save the log entry if we created one
                     if log_entry:
                         log_entry['timestamp'] = time.time()
                         app.job_logs[job_id].append(log_entry)
                 
-                # Do the enhanced search with our callback - use higher max_results to get more companies
-                enhanced_data = enhanced_vendor_search(vendor_name, max_results=20, status_callback=update_status)
+                # Create status callback for FeaturedCustomers
+                def featured_customers_callback(metrics):
+                    # Update metrics
+                    if 'metrics' not in app.job_results[job_id]:
+                        app.job_results[job_id]['metrics'] = {}
+                    
+                    # Store FeaturedCustomers metrics in a separate section
+                    if 'featured_customers' not in app.job_results[job_id]['metrics']:
+                        app.job_results[job_id]['metrics']['featured_customers'] = {}
+                    
+                    app.job_results[job_id]['metrics']['featured_customers'].update(metrics.copy() if metrics else {})
+                    
+                    # Update status based on metrics
+                    status = metrics.get('status', '')
+                    if status == 'complete':
+                        # Don't change overall job status when this particular search completes
+                        pass
+                    elif status == 'error' or status.startswith('error') or status == 'failed':
+                        # Only update status for errors
+                        app.job_results[job_id]['status'] = 'running'  # Keep running even if this part fails
+                    
+                    # Generate appropriate message
+                    message = "Processing FeaturedCustomers..."
+                    if status == 'featured_customers_started':
+                        message = f"Starting FeaturedCustomers search for {vendor_name}..."
+                    elif status == 'featured_customers_searching':
+                        message = f"Searching FeaturedCustomers for {vendor_name}..."
+                    elif status == 'featured_customers_parsing_search':
+                        message = f"Parsing FeaturedCustomers search results..."
+                    elif status == 'featured_customers_accessing_profile':
+                        message = f"Accessing vendor profile on FeaturedCustomers..."
+                    elif status == 'featured_customers_parsing_profile':
+                        message = f"Analyzing vendor profile on FeaturedCustomers..."
+                    elif status == 'featured_customers_processing_section':
+                        section_index = metrics.get('current_section', 0)
+                        total_sections = metrics.get('total_sections', 0)
+                        message = f"Processing customer section {section_index}/{total_sections} on FeaturedCustomers..."
+                    elif status == 'featured_customers_found':
+                        message = f"Found {metrics.get('customers_found', 0)} customers on FeaturedCustomers..."
+                    elif status == 'complete':
+                        message = f"FeaturedCustomers search complete! Found {metrics.get('customers_found', 0)} customers."
+                    elif status == 'error' or status.startswith('error') or status == 'failed':
+                        message = f"FeaturedCustomers error: {metrics.get('error_message', 'Unknown error')}"
+                    
+                    # Calculate progress - FeaturedCustomers search takes 40-60% of progress bar
+                    progress_step = 40
+                    if status == 'complete':
+                        progress_step = 60
+                    elif status.startswith('error') or status == 'failed':
+                        progress_step = 60
+                    elif 'customers_found' in metrics and 'target_count' in metrics and metrics['target_count'] > 0:
+                        customers_ratio = min(1.0, metrics['customers_found'] / metrics['target_count'])
+                        progress_step = 40 + int(customers_ratio * 20)
+                    
+                    # Don't decrease progress
+                    current_progress = app.job_results[job_id]['progress'].get('step', 0)
+                    if progress_step > current_progress:
+                        app.job_results[job_id]['progress'] = {
+                            'step': progress_step,
+                            'message': message
+                        }
+                    
+                    # Add log entry for significant events
+                    log_entry = None
+                    if status == 'featured_customers_started':
+                        log_entry = {'type': 'info', 'message': f"Starting FeaturedCustomers search for {vendor_name}..."}
+                    elif status == 'featured_customers_accessing_profile':
+                        profile_url = metrics.get('profile_url', '')
+                        if profile_url:
+                            log_entry = {'type': 'info', 'message': f"Found vendor profile on FeaturedCustomers"}
+                    elif status == 'featured_customers_found' and metrics.get('customers_found', 0) > 0 and metrics.get('customers_found', 0) % 5 == 0:
+                        # Log every 5 customers found
+                        customers_found = metrics.get('customers_found', 0)
+                        log_entry = {'type': 'success', 'message': f"FeaturedCustomers: found {customers_found} customers so far"}
+                    elif status == 'complete':
+                        customers_found = metrics.get('customers_found', 0)
+                        log_entry = {'type': 'success', 'message': f"FeaturedCustomers search complete! Found {customers_found} customers."}
+                    elif status == 'error' or status.startswith('error') or status == 'failed':
+                        error_msg = metrics.get('error_message', metrics.get('failure_reason', 'Unknown error'))
+                        log_entry = {'type': 'error', 'message': f"FeaturedCustomers error: {error_msg}"}
+                    
+                    # Add timestamp and save the log entry if we created one
+                    if log_entry:
+                        log_entry['timestamp'] = time.time()
+                        app.job_logs[job_id].append(log_entry)
                 
-                # Extract results and metrics
+                # Log entries for starting parallel searches
+                log_entry = {'type': 'info', 'message': f"Starting enhanced search with Grok for {vendor_name}...", 'timestamp': time.time()}
+                app.job_logs[job_id].append(log_entry)
+                
+                log_entry = {'type': 'info', 'message': f"Starting FeaturedCustomers search for {vendor_name}...", 'timestamp': time.time()}
+                app.job_logs[job_id].append(log_entry)
+                
+                # Do the enhanced search with our callback
+                enhanced_data = enhanced_vendor_search(vendor_name, max_results=20, status_callback=enhanced_search_callback)
+                
+                # Do the FeaturedCustomers search with our callback
+                featured_data = scrape_featured_customers(vendor_name, max_results=20, status_callback=featured_customers_callback)
+                
+                # Extract results and metrics from enhanced search
                 if hasattr(enhanced_data, 'results') and hasattr(enhanced_data, 'metrics'):
                     results_data = enhanced_data.results
                     metrics = enhanced_data.metrics
@@ -223,10 +324,23 @@ def background_worker():
                 # Update job progress
                 app.job_results[job_id]['progress'] = {
                     'step': 80, 
-                    'message': 'Combining results...'
+                    'message': 'Combining results from all sources...'
                 }
                 
-                # Combine results, preferring enhanced data
+                # Log entry for combining results
+                log_entry = {'type': 'info', 
+                           'message': f"Combining results from vendor site ({len(vendor_data)} items), " +
+                                     f"enhanced search ({len(results_data)} items), and " +
+                                     f"FeaturedCustomers ({len(featured_data)} items)",
+                           'timestamp': time.time()}
+                app.job_logs[job_id].append(log_entry)
+                
+                # Combine results from all sources
+                app_logger.info(f"Combining results from vendor site ({len(vendor_data)} items), " +
+                               f"enhanced search ({len(results_data)} items), and " +
+                               f"FeaturedCustomers ({len(featured_data)} items)")
+                
+                # Start with vendor data
                 combined_data = vendor_data.copy()
                 
                 # Add enhanced data, avoiding duplicates
@@ -234,6 +348,13 @@ def background_worker():
                 for item in results_data:
                     if item.get('name', '').lower() not in existing_names:
                         combined_data.append(item)
+                        existing_names.add(item.get('name', '').lower())
+                
+                # Add FeaturedCustomers data, avoiding duplicates
+                for item in featured_data:
+                    if item.get('name', '').lower() not in existing_names:
+                        combined_data.append(item)
+                        existing_names.add(item.get('name', '').lower())
                 
                 # Format the data for the results template
                 formatted_results = []
