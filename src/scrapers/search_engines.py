@@ -116,6 +116,9 @@ def search_google(vendor_name, status_callback=None):
                     parsed_url = urlparse(link)
                     domain = parsed_url.netloc
                     
+                    # Log the full result details
+                    logger.info(f"Processing search result {result_index+1}/{len(search_results)}: {json.dumps(result)}")
+                    
                     logger.debug(f"Processing search result {result_index+1}/{len(search_results)}: {title}",
                                extra={'title': title, 'link': link, 'domain': domain})
                     
@@ -287,6 +290,9 @@ def google_search(query: str) -> list:
         json_start = time.time()
         result_json = response.json()
         api_metrics['json_parse_time'] = time.time() - json_start
+        
+        # Log the full raw response
+        logger.info(f"Full Google API response: {json.dumps(result_json)}")
         
         # Extract and return items
         items = result_json.get("items", [])
