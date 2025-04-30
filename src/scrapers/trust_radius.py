@@ -257,8 +257,35 @@ def scrape_trust_radius(vendor_name, max_results=20, status_callback=None):
                             metrics['customers_found'] = len(partial_results)
                         status_callback(metrics)
                 
-                # Use Grok to analyze the content
-                grok_results = analyze_with_grok(search_data, vendor_name, grok_progress_callback, max_results)
+                # Define custom prompt for Grok
+                custom_prompt = f"""
+                Analyze this customer data for {vendor_name}:
+
+                {search_data}
+
+                TASK: ONLY extract EXISTING company names that are explicitly mentioned as customers or clients of {vendor_name}.
+
+                CRITICAL INSTRUCTIONS:
+                - DO NOT CHANGE ANYTHING - ONLY EXTRACT WHAT ALREADY EXISTS
+                - DO NOT MAKE UP OR INVENT any company names
+                - DO NOT include page titles, navigation items, or UI elements
+                - DO NOT include the search terms themselves as results
+                - DO NOT include "TrustRadius" itself as a company
+                - DO NOT append ".com" to phrases that aren't actual companies
+                - DO NOT create concatenated words by removing spaces
+                - IF NO COMPANIES ARE FOUND, return an empty list - don't invent companies
+                
+                ONLY return companies that are EXPLICITLY mentioned as using {vendor_name}'s products or services.
+                
+                Please respond with each customer on a new line, following this format:
+                Company Name
+
+                If no legitimate companies are found, respond with:
+                NO_COMPANIES_FOUND
+                """
+                
+                # Use Grok to analyze the content with custom prompt
+                grok_results = analyze_with_grok(search_data, vendor_name, grok_progress_callback, max_results, custom_prompt=custom_prompt)
                 
                 # Add any new results from Grok analysis
                 for result in grok_results:
