@@ -11,7 +11,7 @@ from src.utils.logger import get_logger, LogComponent, set_context, log_data_met
 # Get a logger specifically for the analyzer component
 logger = get_logger(LogComponent.GROK)
 
-def analyze_with_grok(data, vendor_name, progress_callback=None, max_results=20):
+def analyze_with_grok(data, vendor_name, progress_callback=None, max_results=20, custom_prompt=None):
     """
     Analyze collected data using Grok AI.
     
@@ -21,6 +21,7 @@ def analyze_with_grok(data, vendor_name, progress_callback=None, max_results=20)
         progress_callback: Optional callback function to report progress
                           Callback signature: func(stage, partial_results=None, message=None)
         max_results: Maximum number of results to return (default: 20)
+        custom_prompt: Optional custom prompt to override the default prompt
     """
     try:
         # Report initial progress
@@ -80,40 +81,46 @@ def analyze_with_grok(data, vendor_name, progress_callback=None, max_results=20)
             logger.warning(f"Data too large ({len(formatted_data)} chars), truncating to {max_chars} chars")
             formatted_data = formatted_data[:max_chars] + "..."
             
-        # Prepare enhanced prompt for Grok with improved filtering
-        prompt = f"""
-        Analyze this customer data for {vendor_name}:
+        if custom_prompt:
+            # Use the custom prompt if provided
+            # Replace {search_data} with formatted_data in the custom prompt
+            prompt = custom_prompt.replace("{search_data}", formatted_data)
+            logger.info("Using custom prompt for Grok analysis")
+        else:
+            # Prepare default enhanced prompt for Grok with improved filtering
+            prompt = f"""
+            Analyze this customer data for {vendor_name}:
 
-        {formatted_data}
+            {formatted_data}
 
-        TASK: Thoroughly analyze this data and identify ONLY legitimate company names that appear to be customers or clients of {vendor_name}.
+            TASK: Thoroughly analyze this data and identify ONLY legitimate company names that appear to be customers or clients of {vendor_name}.
 
-        IMPORTANT: Take your time to analyze the entire content. You MUST spend at least 45-60 seconds analyzing the data.
-        
-        CRITICAL FILTERING INSTRUCTIONS:
-        - DO NOT include navigation menu items, category names, or UI elements
-        - DO NOT include generic headings like "Trusted by" or "Our Customers"
-        - DO NOT include slogans, marketing copy, or promotional text
-        - DO NOT include general phrases that aren't company names
-        - DO NOT include descriptive sections like "Government and Public Sector"
-        - A real company name typically includes terms like Inc, LLC, Ltd, GmbH, or has a distinctive brand name
-        - Focus on names that have actual evidence of being customers in the text
-        
-        Look for indicators that suggest these companies are customers, such as:
-        - Company names mentioned in testimonial contexts
-        - Companies described as "using" or "choosing" {vendor_name}
-        - Companies listed as case studies or success stories
-        - Any company presented as a customer reference with clear evidence
+            IMPORTANT: Take your time to analyze the entire content. You MUST spend at least 45-60 seconds analyzing the data.
+            
+            CRITICAL FILTERING INSTRUCTIONS:
+            - DO NOT include navigation menu items, category names, or UI elements
+            - DO NOT include generic headings like "Trusted by" or "Our Customers"
+            - DO NOT include slogans, marketing copy, or promotional text
+            - DO NOT include general phrases that aren't company names
+            - DO NOT include descriptive sections like "Government and Public Sector"
+            - A real company name typically includes terms like Inc, LLC, Ltd, GmbH, or has a distinctive brand name
+            - Focus on names that have actual evidence of being customers in the text
+            
+            Look for indicators that suggest these companies are customers, such as:
+            - Company names mentioned in testimonial contexts
+            - Companies described as "using" or "choosing" {vendor_name}
+            - Companies listed as case studies or success stories
+            - Any company presented as a customer reference with clear evidence
 
-        Please respond with each customer on a new line, following this format:
-        Company Name
+            Please respond with each customer on a new line, following this format:
+            Company Name
 
-        Only include companies that you believe are actual customers with at least 80% confidence.
-        Do not include {vendor_name} itself or generic terms.
-        
-        You MUST take at least 45-60 seconds to thoroughly process this content before responding.
-        Provide a thorough analysis as your response is critical for business intelligence.
-        """
+            Only include companies that you believe are actual customers with at least 80% confidence.
+            Do not include {vendor_name} itself or generic terms.
+            
+            You MUST take at least 45-60 seconds to thoroughly process this content before responding.
+            Provide a thorough analysis as your response is critical for business intelligence.
+            """
         
         # Call X.AI API with proper authentication (since our key is X.AI format)
         headers = {
@@ -295,9 +302,15 @@ def parse_grok_response(text, vendor_name, max_results=5):
     
     # Split by new lines and process each line
     lines = text.strip().split('\n')
+    
+    # Check if the response indicates no companies were found
+    if any(line.strip() == 'NO_COMPANIES_FOUND' for line in lines):
+        logger.info("Grok response indicates no companies were found")
+        return results
+        
     for line in lines:
         line = line.strip()
-        if not line or line.startswith('#'):
+        if not line or line.startswith('#') or line.lower() == 'no_companies_found':
             continue
         
         # Try to extract customer name and URL
