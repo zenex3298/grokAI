@@ -101,6 +101,9 @@ def scrape_featured_customers(vendor_name, max_results=20, status_callback=None)
                 
             logger.debug(f"Successfully loaded FeaturedCustomers vendors page ({len(response.text)} bytes)",
                        extra={'response_size': len(response.text)})
+            
+            # Parse HTML
+            soup = BeautifulSoup(response.text, 'html.parser')
                        
             # Additional debugging to analyze response structure
             if 'vendor' in response.text.lower() or 'vendors' in response.text.lower():
@@ -160,6 +163,10 @@ def scrape_featured_customers(vendor_name, max_results=20, status_callback=None)
                         logger.debug(f"Found potential JSON data: {json_part}")
                 except Exception as json_err:
                     logger.debug(f"Error parsing JSON data: {str(json_err)}")
+            
+            # Add message about possible SPA nature
+            logger.info("It appears FeaturedCustomers may have changed their website to a fully JavaScript-rendered SPA that requires browser automation to scrape.")
+            logger.info("Basic HTTP requests are returning content without links because the page content is dynamically generated with JavaScript.")
                 
         except requests.exceptions.RequestException as e:
             logger.error(f"Request error accessing FeaturedCustomers vendors endpoint: {str(e)}",
@@ -173,9 +180,6 @@ def scrape_featured_customers(vendor_name, max_results=20, status_callback=None)
                 status_callback(metrics)
             
             return []
-        
-        # Parse HTML
-        soup = BeautifulSoup(response.text, 'html.parser')
         
         # Update status if callback provided
         if status_callback:
