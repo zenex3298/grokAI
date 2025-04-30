@@ -62,12 +62,18 @@ def search_google(vendor_name, status_callback=None):
         
         metrics['using_api'] = True
         
-        # Define search queries with different strategies
+        # Define search queries with different strategies, appending .com and business context
+        # Extract domain name without TLD for company website reference
+        company_name = vendor_name.lower().replace(" ", "")
+        
+        # Define queries that focus on business context and company website
         queries = [
-            f'"{vendor_name} customers"',
-            f'"has chosen {vendor_name}"',
-            f'"{vendor_name} case study"',
-            f'"{vendor_name} success story"'
+            f'"{company_name}.com" customers business',
+            f'"{company_name}.com" "case study" business',
+            f'company "uses {vendor_name}" business',
+            f'organization "has chosen {vendor_name}" business',
+            f'{vendor_name} "customer success story" business',
+            f'{vendor_name} "client testimonial" business'
         ]
         
         # Track query success/failure
@@ -132,7 +138,7 @@ def search_google(vendor_name, status_callback=None):
                     source_type = None
                     
                     # Strategy 1: Case study or success story in title
-                    if "case study" in title.lower() or "success story" in title.lower():
+                    if "case study" in title.lower() or "success story" in title.lower() or "testimonial" in title.lower():
                         parts = title.split("-")
                         if len(parts) > 1:
                             potential_customer = parts[0].strip()
@@ -145,25 +151,61 @@ def search_google(vendor_name, status_callback=None):
                         lower_title = title.lower()
                         lower_snippet = snippet.lower()
                         
-                        if (f"chose {vendor_name.lower()}" in lower_title or 
-                            f"selected {vendor_name.lower()}" in lower_title or
-                            f"uses {vendor_name.lower()}" in lower_title or
-                            f"chose {vendor_name.lower()}" in lower_snippet or
-                            f"selected {vendor_name.lower()}" in lower_snippet or
-                            f"uses {vendor_name.lower()}" in lower_snippet):
-                            
+                        # Expanded patterns to catch more customer mentions
+                        patterns = [
+                            f"chose {vendor_name.lower()}", 
+                            f"selected {vendor_name.lower()}", 
+                            f"uses {vendor_name.lower()}",
+                            f"implemented {vendor_name.lower()}",
+                            f"deploying {vendor_name.lower()}",
+                            f"partnered with {vendor_name.lower()}",
+                            f"customer of {vendor_name.lower()}",
+                            f"client of {vendor_name.lower()}"
+                        ]
+                        
+                        found_pattern = False
+                        for pattern in patterns:
+                            if pattern in lower_title or pattern in lower_snippet:
+                                found_pattern = True
+                                break
+                                
+                        if found_pattern:
                             # Try to extract customer name from title
                             parts = title.split(vendor_name, 1)[0].strip()
                             if parts and len(parts.split()) < 5:  # Avoid long phrases
                                 customer_name = parts
-                                source_type = "chose_pattern"
+                                source_type = "customer_pattern"
+                    
+                    # Strategy 3: Look for business names in snippet
+                    if not customer_name and "customer" in snippet.lower() and vendor_name.lower() in snippet.lower():
+                        # Look for company names with common business suffixes
+                        business_patterns = [" Inc", " LLC", " Ltd", " Corporation", " Bank", " Credit Union", " Financial"]
+                        for pattern in business_patterns:
+                            if pattern in snippet:
+                                # Extract company name with up to 3 words before the pattern
+                                index = snippet.find(pattern)
+                                potential_text = snippet[:index]
+                                words = potential_text.split()
+                                if len(words) >= 1:
+                                    # Take up to 3 words before the pattern
+                                    potential_name = " ".join(words[-min(3, len(words)):]) + pattern
+                                    if potential_name.lower() != vendor_name.lower():
+                                        customer_name = potential_name
+                                        source_type = "business_name_pattern"
+                                        break
                     
                     # If we found a customer name, add it to results
                     if customer_name and customer_name.lower() != vendor_name.lower():
                         # Clean up name - remove common prefixes/suffixes
-                        for prefix in ["how ", "why ", "when "]:
+                        for prefix in ["how ", "why ", "when ", "the ", "a ", "an "]:
                             if customer_name.lower().startswith(prefix):
                                 customer_name = customer_name[len(prefix):].strip()
+                        
+                        # Remove any non-business meaningful words at the end
+                        end_words_to_remove = [" and", " with", " for", " using", " uses", " to", " by"]
+                        for end_word in end_words_to_remove:
+                            if customer_name.lower().endswith(end_word.lower()):
+                                customer_name = customer_name[:-len(end_word)].strip()
                         
                         all_results.append({
                             "name": customer_name,
