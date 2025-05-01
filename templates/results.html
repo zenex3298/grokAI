@@ -178,6 +178,7 @@
                                         <th>Competitor</th>
                                         <th>Customer Name</th>
                                         <th>Customer URL</th>
+                                        <th>Source</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -190,6 +191,13 @@
                                             <a href="https://{{ result.customer_url }}" target="_blank">{{ result.customer_url }}</a>
                                             {% else %}
                                             -
+                                            {% endif %}
+                                        </td>
+                                        <td>
+                                            {% if result.source == 'AI Generated' %}
+                                            <span class="badge bg-info">{{ result.source }}</span>
+                                            {% else %}
+                                            <span class="badge bg-success">{{ result.source|default('Scraped') }}</span>
                                             {% endif %}
                                         </td>
                                     </tr>
@@ -514,6 +522,7 @@
                                 <th>Competitor</th>
                                 <th>Customer Name</th>
                                 <th>Customer URL</th>
+                                <th>Source</th>
                             </tr>
                         </thead>
                         <tbody>`;
@@ -533,6 +542,15 @@
                     }
                     
                     tableHtml += `</td>
+                        <td>`;
+                        
+                    if (result.source === 'AI Generated') {
+                        tableHtml += `<span class="badge bg-info">${result.source}</span>`;
+                    } else {
+                        tableHtml += `<span class="badge bg-success">${result.source || 'Scraped'}</span>`;
+                    }
+                    
+                    tableHtml += `</td>
                         </tr>`;
                 });
                 
@@ -546,6 +564,7 @@
                     <div class="text-muted small mt-3">
                         <p><strong>Note:</strong> This data is derived from public information sources and may not be complete. 
                         Some customers may be inferred based on available information. URLs are estimated when not explicitly provided.</p>
+                        <p>Results marked as <span class="badge bg-info">AI Generated</span> are potential customers suggested by our AI based on industry patterns, not confirmed customers.</p>
                     </div>`;
                 }
                 

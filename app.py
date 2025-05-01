@@ -2,6 +2,8 @@ import os
 import time
 import threading
 import queue
+import json
+import requests
 from flask import Flask, render_template, request, jsonify
 from dotenv import load_dotenv
 from src.scrapers.vendor_site import scrape_vendor_site
@@ -14,6 +16,7 @@ from src.scrapers.builtwith import scrape_builtwith
 from src.scrapers.publicwww import scrape_publicwww
 from src.utils.data_validator import validate_combined_data
 from src.utils.logger import setup_logging, get_logger, LogComponent, set_context
+from src.analyzers.grok_analyzer import cleanup_url
 
 # Load environment variables
 load_dotenv()
@@ -866,10 +869,33 @@ def background_worker():
                         'customer_url': url
                     })
                 
-                # Limit final results to the user-specified max_results
+                # Limit final results to the user-specified max_results if we have too many
                 if len(formatted_results) > max_results:
                     app_logger.info(f"Limiting final results from {len(formatted_results)} to {max_results} as requested")
                     formatted_results = formatted_results[:max_results]
+                
+                # Generate additional suggestions with Grok if we have fewer results than requested
+                if len(formatted_results) < max_results:
+                    app_logger.info(f"We only have {len(formatted_results)} results, but {max_results} were requested. Generating additional suggestions...")
+                    additional_results = generate_additional_suggestions(vendor_name, formatted_results, max_results - len(formatted_results))
+                    
+                    # Add a source field to the original results for clarity
+                    for result in formatted_results:
+                        if "source" not in result:
+                            result["source"] = "Scraped"
+                    
+                    # Add the additional results to our formatted results
+                    formatted_results.extend(additional_results)
+                    
+                    app_logger.info(f"Added {len(additional_results)} AI-generated suggestions to results")
+                    
+                    # Log entry for the AI generation
+                    log_entry = {
+                        'type': 'info',
+                        'message': f"Generated {len(additional_results)} additional potential customers with AI assistance",
+                        'timestamp': time.time()
+                    }
+                    app.job_logs[job_id].append(log_entry)
                 
                 app_logger.info(f"Found {len(formatted_results)} customers for {vendor_name}")
                 
@@ -916,6 +942,190 @@ def background_worker():
                 app.job_queue.task_done()
             except:
                 pass
+
+# Function to generate additional customer suggestions using Grok AI
+def generate_additional_suggestions(vendor_name, existing_results, count_needed):
+    """
+    Use Grok AI to generate additional customer suggestions when we have fewer results than requested.
+    
+    Args:
+        vendor_name: The name of the vendor we're analyzing
+        existing_results: The list of results we already have
+        count_needed: How many additional results we need
+        
+    Returns:
+        A list of additional suggested customers in the same format as existing_results
+    """
+    logger = get_logger(LogComponent.APP)
+    logger.info(f"Generating {count_needed} additional customer suggestions for {vendor_name}")
+    
+    try:
+        # Get Grok API key from environment
+        api_key = os.environ.get('GROK_API_KEY')
+        
+        if not api_key:
+            logger.error("GROK_API_KEY not found in environment variables")
+            return []
+        
+        # Prepare a list of existing customer names to avoid duplicates
+        existing_names = [result.get('customer_name', '').lower() for result in existing_results]
+        
+        # Format existing results for prompt context
+        existing_context = ""
+        for i, result in enumerate(existing_results[:10]):  # Limit to first 10 for context
+            existing_context += f"{i+1}. {result.get('customer_name', 'Unknown')}\n"
+        
+        # Create a prompt for Grok to generate additional suggestions
+        prompt = f"""
+        I need to generate {count_needed} additional potential customers for {vendor_name}.
+        
+        Here are some customers we already know about:
+        {existing_context}
+        
+        TASK: Generate {count_needed} additional companies that are likely to be customers of {vendor_name}. 
+        These should be real companies in the same industry or with similar characteristics as the existing customers.
+        
+        IMPORTANT GUIDELINES:
+        - Each company MUST be a real, existing company (not fictional)
+        - DO NOT include any companies already in the list above
+        - Focus on companies that would realistically use {vendor_name}'s products/services
+        - Include both well-known companies and some less obvious choices
+        - For each company, provide both the company name and their primary domain
+        
+        Please format your response as a JSON array with each company having "name" and "domain" fields:
+        [
+          {{"name": "Company Name 1", "domain": "company1.com"}},
+          {{"name": "Company Name 2", "domain": "company2.com"}},
+          ...
+        ]
+        
+        Only respond with the JSON array, nothing else.
+        """
+        
+        # Call X.AI API with proper authentication (using the Grok API key)
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'VendorCustomerIntelligenceTool/1.0',
+            'X-Request-ID': f'additional-{vendor_name}-{int(time.time())}'
+        }
+        
+        api_payload = {
+            'model': 'grok-3-latest',
+            'messages': [
+                {'role': 'system', 'content': 'You are a helpful assistant that specializes in business intelligence and customer research.'},
+                {'role': 'user', 'content': prompt}
+            ],
+            'max_tokens': 2000,
+            'temperature': 0.7,  # Higher temperature for more varied suggestions
+            'timeout': 50
+        }
+        
+        # Make the API call
+        logger.info(f"Calling Grok API to generate additional suggestions")
+        response = requests.post(
+            'https://api.x.ai/v1/chat/completions',
+            headers=headers,
+            timeout=60,
+            json=api_payload
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"Grok API error: {response.status_code} - {response.text}")
+            return []
+        
+        # Process the response
+        grok_response = response.json()
+        generated_text = grok_response.get('choices', [{}])[0].get('message', {}).get('content', '')
+        logger.info(f"Received valid response from Grok API: {len(generated_text)} characters")
+        
+        # Try to parse the JSON response
+        try:
+            # Find the JSON array in the response
+            json_start = generated_text.find('[')
+            json_end = generated_text.rfind(']') + 1
+            
+            if json_start >= 0 and json_end > json_start:
+                json_str = generated_text[json_start:json_end]
+                suggestions = json.loads(json_str)
+                
+                # Format the suggestions as customer data
+                additional_results = []
+                for suggestion in suggestions:
+                    # Skip if the company is already in our results
+                    if suggestion.get('name', '').lower() in existing_names:
+                        continue
+                        
+                    # Generate a proper URL
+                    domain = suggestion.get('domain', '')
+                    if not domain:
+                        domain = f"{suggestion.get('name', '').lower().replace(' ', '')}.com"
+                    
+                    # Clean up the URL
+                    clean_url = cleanup_url(domain)
+                    
+                    # Add to results
+                    additional_results.append({
+                        'competitor': vendor_name,
+                        'customer_name': suggestion.get('name', 'Unknown'),
+                        'customer_url': clean_url,
+                        'source': 'AI Generated'
+                    })
+                    
+                    # Add to existing names to avoid duplicates in future iterations
+                    existing_names.append(suggestion.get('name', '').lower())
+                    
+                    # Stop if we have enough
+                    if len(additional_results) >= count_needed:
+                        break
+                
+                logger.info(f"Generated {len(additional_results)} additional suggestions")
+                return additional_results
+            else:
+                logger.error("Could not find JSON array in Grok response")
+                return []
+        except Exception as e:
+            logger.error(f"Error parsing Grok suggestions: {str(e)}")
+            
+            # Fallback to simple parsing if JSON parse fails
+            suggestions = []
+            lines = generated_text.strip().split('\n')
+            for line in lines:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                
+                # Try to extract company name
+                parts = line.split('-')
+                if len(parts) >= 1:
+                    name = parts[0].strip()
+                    if len(name) < 2 or name.lower() in existing_names:
+                        continue
+                    
+                    # Generate URL
+                    url = f"{name.lower().replace(' ', '')}.com"
+                    
+                    suggestions.append({
+                        'competitor': vendor_name,
+                        'customer_name': name,
+                        'customer_url': cleanup_url(url),
+                        'source': 'AI Generated'
+                    })
+                    
+                    # Add to existing names to avoid duplicates
+                    existing_names.append(name.lower())
+                    
+                    # Stop if we have enough
+                    if len(suggestions) >= count_needed:
+                        break
+            
+            logger.info(f"Generated {len(suggestions)} additional suggestions using fallback parsing")
+            return suggestions
+    
+    except Exception as e:
+        logger.error(f"Error generating additional suggestions: {str(e)}")
+        return []
 
 # Start the background worker thread
 worker_thread = threading.Thread(target=background_worker, daemon=True)
