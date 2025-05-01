@@ -23,6 +23,12 @@
                                        placeholder="Enter vendor name (e.g., Taskade, Adobe, Microsoft)" required>
                                 <small class="text-muted">Enter the name of the vendor/competitor whose customers you want to identify.</small>
                             </div>
+                            <div class="mb-3">
+                                <label for="max_results" class="form-label">Maximum Results</label>
+                                <input type="number" class="form-control" id="max_results" name="max_results" 
+                                       placeholder="Maximum number of results (default: 20)" min="1" max="100" value="20">
+                                <small class="text-muted">Specify how many results you want to receive (1-100).</small>
+                            </div>
                             <div class="d-grid gap-2">
                                 <button type="submit" class="btn btn-primary" id="analyze-btn">Analyze</button>
                             </div>

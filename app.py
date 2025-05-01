@@ -38,8 +38,16 @@ def background_worker():
     while True:
         try:
             # Get a job from the queue (blocks until a job is available)
-            job_id, vendor_name = app.job_queue.get()
-            app_logger.info(f"Processing job {job_id} for vendor {vendor_name}")
+            job_data = app.job_queue.get()
+            
+            # Handle both old (2-element) and new (3-element) queue formats
+            if len(job_data) == 3:
+                job_id, vendor_name, max_results = job_data
+            else:
+                job_id, vendor_name = job_data
+                max_results = app.job_results[job_id].get('max_results', 20)
+                
+            app_logger.info(f"Processing job {job_id} for vendor {vendor_name} with max_results: {max_results}")
             
             # Mark the job as being processed
             app.job_results[job_id]['status'] = 'processing'
@@ -117,7 +125,7 @@ def background_worker():
                         app.job_logs[job_id].append(log_entry)
                 
                 # Run vendor site scraping with callback
-                vendor_data = scrape_vendor_site(vendor_name, progress_callback=vendor_site_callback)
+                vendor_data = scrape_vendor_site(vendor_name, max_results=max_results, progress_callback=vendor_site_callback)
                 
                 # Update progress after vendor site scraping
                 app.job_results[job_id]['progress'] = {
@@ -734,25 +742,25 @@ def background_worker():
                         app.job_logs[job_id].append(log_entry)
                 
                 # Do the enhanced search with our callback
-                enhanced_data = enhanced_vendor_search(vendor_name, max_results=20, status_callback=enhanced_search_callback)
+                enhanced_data = enhanced_vendor_search(vendor_name, max_results=max_results, status_callback=enhanced_search_callback)
                 
                 # Do the FeaturedCustomers search with our callback
-                featured_data = scrape_featured_customers(vendor_name, max_results=20, status_callback=featured_customers_callback)
+                featured_data = scrape_featured_customers(vendor_name, max_results=max_results, status_callback=featured_customers_callback)
                 
                 # Do the Google search with our callback
                 google_data = search_google(vendor_name, status_callback=google_search_callback)
                 
                 # Do the TrustRadius search with our callback
-                trust_radius_data = scrape_trust_radius(vendor_name, max_results=20, status_callback=trust_radius_callback)
+                trust_radius_data = scrape_trust_radius(vendor_name, max_results=max_results, status_callback=trust_radius_callback)
                 
                 # Do the PeerSpot search with our callback
-                peerspot_data = scrape_peerspot(vendor_name, max_results=20, status_callback=peerspot_callback)
+                peerspot_data = scrape_peerspot(vendor_name, max_results=max_results, status_callback=peerspot_callback)
                 
                 # Do the BuiltWith search with our callback
-                builtwith_data = scrape_builtwith(vendor_name, max_results=20, status_callback=builtwith_callback)
+                builtwith_data = scrape_builtwith(vendor_name, max_results=max_results, status_callback=builtwith_callback)
                 
                 # Do the PublicWWW search with our callback
-                publicwww_data = scrape_publicwww(vendor_name, max_results=20, status_callback=publicwww_callback)
+                publicwww_data = scrape_publicwww(vendor_name, max_results=max_results, status_callback=publicwww_callback)
                 
                 # Extract results and metrics from enhanced search
                 if hasattr(enhanced_data, 'results') and hasattr(enhanced_data, 'metrics'):
@@ -858,6 +866,11 @@ def background_worker():
                         'customer_url': url
                     })
                 
+                # Limit final results to the user-specified max_results
+                if len(formatted_results) > max_results:
+                    app_logger.info(f"Limiting final results from {len(formatted_results)} to {max_results} as requested")
+                    formatted_results = formatted_results[:max_results]
+                
                 app_logger.info(f"Found {len(formatted_results)} customers for {vendor_name}")
                 
                 # Update job status with final results
@@ -919,12 +932,20 @@ def analyze():
     if not vendor_name:
         return jsonify({'error': 'Vendor name is required'}), 400
     
+    # Get max_results parameter with a default of 20
+    try:
+        max_results = int(request.form.get('max_results', 20))
+        # Ensure max_results is within reasonable limits
+        max_results = max(1, min(100, max_results))
+    except (ValueError, TypeError):
+        max_results = 20
+    
     # Set request context and get app logger
     set_context(vendor_name=vendor_name, request_path='/analyze', operation='analyze_vendor')
     app_logger = get_logger(LogComponent.APP)
     
     # Log the request
-    app_logger.info(f"Received request to analyze vendor: {vendor_name}")
+    app_logger.info(f"Received request to analyze vendor: {vendor_name} with max_results: {max_results}")
     
     # Create a job ID for tracking
     job_id = f"{vendor_name}_{int(time.time())}"
@@ -942,9 +963,10 @@ def analyze():
             'customer_links_found': 0,
             'companies_found': 0,
             'unique_companies': 0,
-            'target_count': 20
+            'target_count': max_results
         },
         'vendor_name': vendor_name,
+        'max_results': max_results,
         'start_time': time.time()
     }
     
@@ -952,13 +974,13 @@ def analyze():
     app.job_logs[job_id] = []
     
     # Add the job to the processing queue
-    app.job_queue.put((job_id, vendor_name))
-    app_logger.info(f"Added job {job_id} to processing queue")
+    app.job_queue.put((job_id, vendor_name, max_results))
+    app_logger.info(f"Added job {job_id} to processing queue with max_results: {max_results}")
     
     # Initial log entry
     log_entry = {
         'type': 'info',
-        'message': f"Added {vendor_name} to processing queue...",
+        'message': f"Added {vendor_name} to processing queue with max_results: {max_results}...",
         'timestamp': time.time()
     }
     app.job_logs[job_id].append(log_entry)
@@ -967,6 +989,7 @@ def analyze():
     return render_template('results.html',
                           vendor_name=vendor_name,
                           job_id=job_id,
+                          max_results=max_results,
                           polling=True)
 
 
