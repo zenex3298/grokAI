@@ -11,6 +11,7 @@ from src.scrapers.search_engines import search_google
 from src.scrapers.trust_radius import scrape_trust_radius
 from src.scrapers.peerspot import scrape_peerspot
 from src.scrapers.builtwith import scrape_builtwith
+from src.scrapers.publicwww import scrape_publicwww
 from src.utils.data_validator import validate_combined_data
 from src.utils.logger import setup_logging, get_logger, LogComponent, set_context
 
@@ -395,6 +396,9 @@ def background_worker():
                 log_entry = {'type': 'info', 'message': f"Starting BuiltWith search for {vendor_name}...", 'timestamp': time.time()}
                 app.job_logs[job_id].append(log_entry)
                 
+                log_entry = {'type': 'info', 'message': f"Starting PublicWWW search for {vendor_name}...", 'timestamp': time.time()}
+                app.job_logs[job_id].append(log_entry)
+                
                 # Create status callback for TrustRadius
                 def trust_radius_callback(metrics):
                     # Update metrics
@@ -648,6 +652,86 @@ def background_worker():
                     if log_entry:
                         log_entry['timestamp'] = time.time()
                         app.job_logs[job_id].append(log_entry)
+                        
+                # Create status callback for PublicWWW
+                def publicwww_callback(metrics):
+                    # Update metrics
+                    if 'metrics' not in app.job_results[job_id]:
+                        app.job_results[job_id]['metrics'] = {}
+                    
+                    # Store PublicWWW metrics in a separate section
+                    if 'publicwww' not in app.job_results[job_id]['metrics']:
+                        app.job_results[job_id]['metrics']['publicwww'] = {}
+                    
+                    app.job_results[job_id]['metrics']['publicwww'].update(metrics.copy() if metrics else {})
+                    
+                    # Update status based on metrics
+                    status = metrics.get('status', '')
+                    if status == 'complete':
+                        # Don't change overall job status when this particular search completes
+                        pass
+                    elif status == 'error' or status.startswith('error') or status == 'failed':
+                        # Only update status for errors
+                        app.job_results[job_id]['status'] = 'running'  # Keep running even if this part fails
+                    
+                    # Generate appropriate message
+                    message = "Processing PublicWWW..."
+                    if status == 'publicwww_started':
+                        message = f"Starting PublicWWW search for {vendor_name}..."
+                    elif status == 'publicwww_searching':
+                        message = f"Searching PublicWWW for {vendor_name}..."
+                    elif status == 'publicwww_parsing_search':
+                        message = f"Parsing PublicWWW search results..."
+                    elif status == 'publicwww_analyzing':
+                        message = f"Analyzing PublicWWW content..."
+                    elif status == 'publicwww_grok_PREPARING':
+                        message = f"Preparing PublicWWW data for analysis..."
+                    elif status == 'publicwww_grok_API_CALL':
+                        message = f"Sending PublicWWW data to Grok..."
+                    elif status == 'publicwww_site_found' or status == 'publicwww_grok_FINALIZING':
+                        message = f"Found {metrics.get('customers_found', 0)} potential customers on PublicWWW..."
+                    elif status == 'complete':
+                        message = f"PublicWWW search complete! Found {metrics.get('customers_found', 0)} customers."
+                    elif status == 'error' or status.startswith('error') or status == 'failed':
+                        message = f"PublicWWW error: {metrics.get('error_message', metrics.get('failure_reason', 'Unknown error'))}"
+                    
+                    # Calculate progress - PublicWWW search takes 40-60% of progress bar
+                    progress_step = 40
+                    if status == 'complete':
+                        progress_step = 60
+                    elif status.startswith('error') or status == 'failed':
+                        progress_step = 60
+                    elif 'customers_found' in metrics and 'target_count' in metrics and metrics['target_count'] > 0:
+                        customers_ratio = min(1.0, metrics['customers_found'] / metrics['target_count'])
+                        progress_step = 40 + int(customers_ratio * 20)
+                    
+                    # Don't decrease progress
+                    current_progress = app.job_results[job_id]['progress'].get('step', 0)
+                    if progress_step > current_progress:
+                        app.job_results[job_id]['progress'] = {
+                            'step': progress_step,
+                            'message': message
+                        }
+                    
+                    # Add log entry for significant events
+                    log_entry = None
+                    if status == 'publicwww_started':
+                        log_entry = {'type': 'info', 'message': f"Starting PublicWWW search for {vendor_name}..."}
+                    elif status == 'publicwww_site_found' and metrics.get('sites_found', 0) > 0 and metrics.get('sites_found', 0) % 5 == 0:
+                        # Log every 5 sites found
+                        sites_found = metrics.get('sites_found', 0)
+                        log_entry = {'type': 'success', 'message': f"PublicWWW: found {sites_found} websites so far"}
+                    elif status == 'complete':
+                        customers_found = metrics.get('customers_found', 0)
+                        log_entry = {'type': 'success', 'message': f"PublicWWW search complete! Found {customers_found} customers."}
+                    elif status == 'error' or status.startswith('error') or status == 'failed':
+                        error_msg = metrics.get('error_message', metrics.get('failure_reason', 'Unknown error'))
+                        log_entry = {'type': 'error', 'message': f"PublicWWW error: {error_msg}"}
+                    
+                    # Add timestamp and save the log entry if we created one
+                    if log_entry:
+                        log_entry['timestamp'] = time.time()
+                        app.job_logs[job_id].append(log_entry)
                 
                 # Do the enhanced search with our callback
                 enhanced_data = enhanced_vendor_search(vendor_name, max_results=20, status_callback=enhanced_search_callback)
@@ -666,6 +750,9 @@ def background_worker():
                 
                 # Do the BuiltWith search with our callback
                 builtwith_data = scrape_builtwith(vendor_name, max_results=20, status_callback=builtwith_callback)
+                
+                # Do the PublicWWW search with our callback
+                publicwww_data = scrape_publicwww(vendor_name, max_results=20, status_callback=publicwww_callback)
                 
                 # Extract results and metrics from enhanced search
                 if hasattr(enhanced_data, 'results') and hasattr(enhanced_data, 'metrics'):
@@ -692,8 +779,9 @@ def background_worker():
                                      f"FeaturedCustomers ({len(featured_data)} items), " +
                                      f"Google search ({len(google_data)} items), " +
                                      f"TrustRadius ({len(trust_radius_data)} items), " +
-                                     f"PeerSpot ({len(peerspot_data)} items), and " +
-                                     f"BuiltWith ({len(builtwith_data)} items)",
+                                     f"PeerSpot ({len(peerspot_data)} items), " +
+                                     f"BuiltWith ({len(builtwith_data)} items), and " +
+                                     f"PublicWWW ({len(publicwww_data)} items)",
                            'timestamp': time.time()}
                 app.job_logs[job_id].append(log_entry)
                 
@@ -703,8 +791,9 @@ def background_worker():
                                f"FeaturedCustomers ({len(featured_data)} items), " +
                                f"Google search ({len(google_data)} items), " +
                                f"TrustRadius ({len(trust_radius_data)} items), " +
-                               f"PeerSpot ({len(peerspot_data)} items), and " +
-                               f"BuiltWith ({len(builtwith_data)} items)")
+                               f"PeerSpot ({len(peerspot_data)} items), " +
+                               f"BuiltWith ({len(builtwith_data)} items), and " +
+                               f"PublicWWW ({len(publicwww_data)} items)")
                 
                 # Start with vendor data
                 combined_data = vendor_data.copy()
@@ -742,6 +831,12 @@ def background_worker():
                 
                 # Add BuiltWith data, avoiding duplicates
                 for item in builtwith_data:
+                    if item.get('name', '').lower() not in existing_names:
+                        combined_data.append(item)
+                        existing_names.add(item.get('name', '').lower())
+                
+                # Add PublicWWW data, avoiding duplicates
+                for item in publicwww_data:
                     if item.get('name', '').lower() not in existing_names:
                         combined_data.append(item)
                         existing_names.add(item.get('name', '').lower())
