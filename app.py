@@ -785,26 +785,32 @@ def background_worker():
                 
                 # Log entry for combining results
                 log_entry = {'type': 'info', 
-                           'message': f"Combining results from vendor site ({len(vendor_data)} items), " +
-                                     f"enhanced search ({len(results_data)} items), " +
-                                     f"FeaturedCustomers ({len(featured_data)} items), " +
-                                     f"Google search ({len(google_data)} items), " +
-                                     f"TrustRadius ({len(trust_radius_data)} items), " +
-                                     f"PeerSpot ({len(peerspot_data)} items), " +
-                                     f"BuiltWith ({len(builtwith_data)} items), and " +
-                                     f"PublicWWW ({len(publicwww_data)} items)",
+                           'message': f"Combining results from vendor site, " +
+                                     f"enhanced search, " +
+                                     f"FeaturedCustomers, " +
+                                     f"Google search, " +
+                                     f"TrustRadius, " +
+                                     f"PeerSpot, " +
+                                     f"BuiltWith, " +
+                                     f"PublicWWW, " +
+                                     f"Enlyft, " +
+                                     f"NerdyData, and " +
+                                     f"AppsRunTheWorld",
                            'timestamp': time.time()}
                 app.job_logs[job_id].append(log_entry)
                 
                 # Combine results from all sources
-                app_logger.info(f"Combining results from vendor site ({len(vendor_data)} items), " +
-                               f"enhanced search ({len(results_data)} items), " +
-                               f"FeaturedCustomers ({len(featured_data)} items), " +
-                               f"Google search ({len(google_data)} items), " +
-                               f"TrustRadius ({len(trust_radius_data)} items), " +
-                               f"PeerSpot ({len(peerspot_data)} items), " +
-                               f"BuiltWith ({len(builtwith_data)} items), and " +
-                               f"PublicWWW ({len(publicwww_data)} items)")
+                app_logger.info(f"Combining results from vendor site, " +
+                               f"enhanced search, " +
+                               f"FeaturedCustomers, " +
+                               f"Google search, " +
+                               f"TrustRadius, " +
+                               f"PeerSpot, " +
+                               f"BuiltWith, " +
+                               f"PublicWWW, " +
+                               f"Enlyft, " +
+                               f"NerdyData, and " +
+                               f"AppsRunTheWorld")
                 
                 # Start with vendor data
                 combined_data = vendor_data.copy()
@@ -871,12 +877,12 @@ def background_worker():
                 
                 # Limit final results to the user-specified max_results if we have too many
                 if len(formatted_results) > max_results:
-                    app_logger.info(f"Limiting final results from {len(formatted_results)} to {max_results} as requested")
+                    app_logger.info(f"Limiting final results to requested amount")
                     formatted_results = formatted_results[:max_results]
                 
                 # Generate additional suggestions with Grok if we have fewer results than requested
                 if len(formatted_results) < max_results:
-                    app_logger.info(f"We only have {len(formatted_results)} results, but {max_results} were requested. Generating additional suggestions...")
+                    app_logger.info(f"Generating additional suggestions to reach target count...")
                     additional_results = generate_additional_suggestions(vendor_name, formatted_results, max_results - len(formatted_results))
                     
                     # Add a source field to the original results for clarity
@@ -887,17 +893,17 @@ def background_worker():
                     # Add the additional results to our formatted results
                     formatted_results.extend(additional_results)
                     
-                    app_logger.info(f"Added {len(additional_results)} AI-generated suggestions to results")
+                    app_logger.info(f"Added AI-generated suggestions to results")
                     
                     # Log entry for the AI generation
                     log_entry = {
                         'type': 'info',
-                        'message': f"Generated {len(additional_results)} additional potential customers with AI assistance",
+                        'message': f"Generated additional potential customers with AI assistance",
                         'timestamp': time.time()
                     }
                     app.job_logs[job_id].append(log_entry)
                 
-                app_logger.info(f"Found {len(formatted_results)} customers for {vendor_name}")
+                app_logger.info(f"Found customers for {vendor_name}")
                 
                 # Update job status with final results
                 app.job_results[job_id].update({
@@ -910,7 +916,7 @@ def background_worker():
                 # Add final log entry
                 log_entry = {
                     'type': 'success', 
-                    'message': f"Analysis complete! Found {len(formatted_results)} customers for {vendor_name}.",
+                    'message': f"Search complete! Results found for {vendor_name}.",
                     'timestamp': time.time()
                 }
                 app.job_logs[job_id].append(log_entry)

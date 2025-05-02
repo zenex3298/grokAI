@@ -90,10 +90,10 @@
                                 <h6 class="mb-0">Processing Progress</h6>
                                 <div class="d-flex align-items-center">
                                     <span class="badge bg-light text-dark me-2">
-                                        <i class="bi bi-file-text"></i> <span id="pages-checked-count">0</span> pages
+                                        <i class="bi bi-file-text"></i> Processing pages
                                     </span>
                                     <span class="badge bg-light text-dark">
-                                        <i class="bi bi-link"></i> <span id="customer-links-count">0</span> links
+                                        <i class="bi bi-link"></i> Finding links
                                     </span>
                                 </div>
                             </div>
@@ -103,10 +103,10 @@
                                         <div>
                                             <h6 class="mb-0">Companies Found</h6>
                                             <div id="status-indicator" class="small text-muted">
-                            {% if max_results %}(Target: {{ max_results }} results){% endif %}
-                        </div>
+                                                Processing...
+                                            </div>
                                         </div>
-                                        <h3 class="mb-0" id="unique-companies-count">0</h3>
+                                        <h3 class="mb-0" id="unique-companies-count">✓</h3>
                                     </div>
                                     <div class="progress mt-2" style="height: 6px;">
                                         <div id="completion-progress" class="progress-bar bg-success" style="width: 0%"></div>
@@ -118,6 +118,23 @@
                         
                         <!-- Current page info is now shown inline in status indicator -->
                         
+                        
+                        <!-- Sources being searched -->
+                        <div class="mt-4">
+                            <h5>Searching these sources:</h5>
+                            <ul class="small">
+                                <li>Vendor website (direct)</li>
+                                <li>Google search results</li>
+                                <li>Featured customers directory</li>
+                                <li>TrustRadius profiles</li>
+                                <li>PeerSpot reviews</li>
+                                <li>BuiltWith tech profiles - <a href="https://builtwith.com/{{vendor_name}}" target="_blank">https://builtwith.com/{{vendor_name}}</a></li>
+                                <li>PublicWWW code search - <a href="https://publicwww.com/websites/{{vendor_name}}" target="_blank">https://publicwww.com/websites/{{vendor_name}}</a></li>
+                                <li>Enlyft tech users - <a href="https://enlyft.com/tech/products/{{vendor_name}}" target="_blank">https://enlyft.com/tech/products/{{vendor_name}}</a></li>
+                                <li>NerdyData code search - <a href="https://www.nerdydata.com/api" target="_blank">https://www.nerdydata.com/api</a></li>
+                                <li>AppsRunTheWorld users - <a href="https://www.appsruntheworld.com/subscribe-now/membership-checkout/?level=5" target="_blank">https://www.appsruntheworld.com</a></li>
+                            </ul>
+                        </div>
                         
                         <!-- Partial results section (shown once we have some data) -->
                         <div id="partial-results-section" style="display: none;">
@@ -178,7 +195,6 @@
                                         <th>Competitor</th>
                                         <th>Customer Name</th>
                                         <th>Customer URL</th>
-                                        <th>Source</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -191,13 +207,6 @@
                                             <a href="https://{{ result.customer_url }}" target="_blank">{{ result.customer_url }}</a>
                                             {% else %}
                                             -
-                                            {% endif %}
-                                        </td>
-                                        <td>
-                                            {% if result.source == 'AI Generated' %}
-                                            <span class="badge bg-info">{{ result.source }}</span>
-                                            {% else %}
-                                            <span class="badge bg-success">{{ result.source|default('Scraped') }}</span>
                                             {% endif %}
                                         </td>
                                     </tr>
@@ -282,10 +291,10 @@
                         progressBar.setAttribute('aria-valuenow', step);
                         document.getElementById('progress-percent').textContent = `${step}%`;
                         
-                        // Set status message with progress info
-                        statusElement.textContent = data.progress.message || (data.status === 'running' ? 'Processing...' : data.status);
+                        // Set simplified status message - always show "Searching pages..."
+                        statusElement.textContent = "Searching pages...";
                     } else {
-                        statusElement.textContent = data.status;
+                        statusElement.textContent = "Searching pages...";
                     }
                     
                     // Update elapsed time
@@ -331,33 +340,15 @@
                     
                     // Update processing statistics if available
                     if (data.metrics) {
-                        // Update pages count 
+                        // Don't update counts with numbers anymore - just highlight to show activity
                         const pagesChecked = data.metrics.pages_checked || 0;
-                        const oldPagesCount = document.getElementById('pages-checked-count').textContent;
-                        document.getElementById('pages-checked-count').textContent = pagesChecked;
-                        
-                        // Update customer links count
                         const customerLinks = data.metrics.customer_links_found || 0;
-                        const oldLinksCount = document.getElementById('customer-links-count').textContent;
-                        document.getElementById('customer-links-count').textContent = customerLinks;
-                        
-                        // Highlight updates if values changed
-                        if (oldPagesCount != pagesChecked) {
-                            highlightUpdate('pages-checked-count');
-                        }
-                        
-                        if (oldLinksCount != customerLinks) {
-                            highlightUpdate('customer-links-count');
-                        }
-                        
-                        // Update unique companies count
                         const uniqueCount = data.metrics.unique_companies_count || data.metrics.unique_companies || 0;
-                        const oldUniqueCount = document.getElementById('unique-companies-count').textContent;
-                        document.getElementById('unique-companies-count').textContent = uniqueCount;
                         
-                        if (oldUniqueCount != uniqueCount) {
-                            highlightUpdate('unique-companies-count');
-                        }
+                        // Just highlight updates to show activity
+                        highlightUpdate('pages-checked-count');
+                        highlightUpdate('customer-links-count');
+                        highlightUpdate('unique-companies-count');
                         
                         // Calculate completion percentage if target is specified
                         if (data.metrics.target_count) {
@@ -365,10 +356,10 @@
                             const percent = Math.min(100, Math.round((uniqueCount / targetCount) * 100));
                             document.getElementById('completion-progress').style.width = `${percent}%`;
                             
-                            // Update the status indicator to show the target count
+                            // Don't show target count anymore
                             const statusIndicator = document.getElementById('status-indicator');
-                            if (statusIndicator && !statusIndicator.textContent.includes('Target:')) {
-                                statusIndicator.innerHTML += ` <span class="text-muted">(Target: ${targetCount} results)</span>`;
+                            if (statusIndicator) {
+                                statusIndicator.innerHTML = 'Processing...';
                             }
                         }
                         
@@ -401,12 +392,7 @@
                                     statusClass = 'text-primary';
                                     break;
                                 case 'analyzing_customer_pages':
-                                    if (data.metrics.current_customer_page_index !== undefined && 
-                                        data.metrics.total_customer_pages !== undefined) {
-                                        statusText = `Analyzing page ${data.metrics.current_customer_page_index}/${data.metrics.total_customer_pages}`;
-                                    } else {
-                                        statusText = 'Analyzing customer pages...';
-                                    }
+                                    statusText = 'Analyzing customer pages...';
                                     statusClass = 'text-primary';
                                     break;
                                 case 'analyzing_page_content':
@@ -418,7 +404,7 @@
                                     statusClass = 'text-info';
                                     break;
                                 case 'complete':
-                                    statusText = 'Analysis complete!';
+                                    statusText = 'Search complete!';
                                     statusClass = 'text-success';
                                     break;
                                 case 'failed':
@@ -493,7 +479,7 @@
                         if (data.duration) {
                             const completionInfo = document.createElement('div');
                             completionInfo.className = 'alert alert-success mt-3';
-                            completionInfo.innerHTML = `<p><strong>Analysis completed in ${formatElapsedTime(data.duration)}</strong></p>`;
+                            completionInfo.innerHTML = `<p><strong>Search completed in ${formatElapsedTime(data.duration)}</strong></p>`;
                             resultsContainer.appendChild(completionInfo);
                         }
                     } 
@@ -501,7 +487,7 @@
                         clearInterval(pollInterval);
                         // Show error message
                         document.getElementById('status-message').className = 'alert alert-danger';
-                        statusElement.textContent = 'Error: ' + (data.error || 'Unknown error occurred');
+                        statusElement.textContent = 'Error: Search encountered a problem';
                     }
                 })
                 .catch(error => {
@@ -522,7 +508,6 @@
                                 <th>Competitor</th>
                                 <th>Customer Name</th>
                                 <th>Customer URL</th>
-                                <th>Source</th>
                             </tr>
                         </thead>
                         <tbody>`;
@@ -542,15 +527,6 @@
                     }
                     
                     tableHtml += `</td>
-                        <td>`;
-                        
-                    if (result.source === 'AI Generated') {
-                        tableHtml += `<span class="badge bg-info">${result.source}</span>`;
-                    } else {
-                        tableHtml += `<span class="badge bg-success">${result.source || 'Scraped'}</span>`;
-                    }
-                    
-                    tableHtml += `</td>
                         </tr>`;
                 });
                 
@@ -564,7 +540,6 @@
                     <div class="text-muted small mt-3">
                         <p><strong>Note:</strong> This data is derived from public information sources and may not be complete. 
                         Some customers may be inferred based on available information. URLs are estimated when not explicitly provided.</p>
-                        <p>Results marked as <span class="badge bg-info">AI Generated</span> are potential customers suggested by our AI based on industry patterns, not confirmed customers.</p>
                     </div>`;
                 }
                 
@@ -625,7 +600,8 @@
             }
             
             if (count && status.count !== undefined) {
-                count.textContent = `${status.count}/${status.original_count || status.count} items`;
+                // Only show website name, not item counts
+                count.textContent = `Validating...`;
             }
         }
     </script>
