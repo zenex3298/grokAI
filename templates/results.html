@@ -189,7 +189,7 @@
                                         <td>{{ result.customer_name }}</td>
                                         <td>
                                             {% if result.customer_url %}
-                                            <a href="{% if 'http' in result.customer_url %}{{ result.customer_url }}{% else %}https://{{ result.customer_url }}{% endif %}" target="_blank">{{ result.customer_url }}</a>
+                                            <a href="{% if 'http' in result.customer_url %}{{ result.customer_url }}{% else %}https://{{ result.customer_url }}{% endif %}" target="_blank">{{ result.customer_url|truncate(100) }}</a>
                                             {% else %}
                                             -
                                             {% endif %}
@@ -483,6 +483,21 @@
         
         // Function to render results table (shared between partial and final results)
         function renderResultsTable(results, container, isPartial = false) {
+            // Remove duplicate URLs
+            const uniqueResults = [];
+            const seenUrls = new Set();
+            
+            if (results && results.length > 0) {
+                results.forEach(result => {
+                    // Use lowercase URL as key for case-insensitive comparison
+                    const urlKey = result.customer_url ? result.customer_url.toLowerCase() : `name_${result.customer_name.toLowerCase()}`;
+                    if (!seenUrls.has(urlKey)) {
+                        seenUrls.add(urlKey);
+                        uniqueResults.push(result);
+                    }
+                });
+                results = uniqueResults;
+            }
             if (results && results.length > 0) {
                 // Create table for results
                 let tableHtml = `
@@ -507,7 +522,8 @@
                     
                     if (result.customer_url) {
                         const url = result.customer_url.startsWith('http') ? result.customer_url : `https://${result.customer_url}`;
-                        tableHtml += `<a href="${url}" target="_blank">${result.customer_url}</a>`;
+                        const displayUrl = result.customer_url.length > 100 ? result.customer_url.substring(0, 97) + '...' : result.customer_url;
+                        tableHtml += `<a href="${url}" target="_blank">${displayUrl}</a>`;
                     } else {
                         tableHtml += `-`;
                     }
