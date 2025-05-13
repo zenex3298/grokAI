@@ -189,7 +189,7 @@
                                         <td>{{ result.customer_name }}</td>
                                         <td>
                                             {% if result.customer_url %}
-                                            <a href="https://{{ result.customer_url }}" target="_blank">{{ result.customer_url }}</a>
+                                            <a href="{% if 'http' in result.customer_url %}{{ result.customer_url }}{% else %}https://{{ result.customer_url }}{% endif %}" target="_blank">{{ result.customer_url }}</a>
                                             {% else %}
                                             -
                                             {% endif %}
@@ -506,7 +506,8 @@
                             <td>`;
                     
                     if (result.customer_url) {
-                        tableHtml += `<a href="https://${result.customer_url}" target="_blank">${result.customer_url}</a>`;
+                        const url = result.customer_url.startsWith('http') ? result.customer_url : `https://${result.customer_url}`;
+                        tableHtml += `<a href="${url}" target="_blank">${result.customer_url}</a>`;
                     } else {
                         tableHtml += `-`;
                     }
