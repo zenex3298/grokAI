@@ -14,13 +14,13 @@ body {
 }
 
 .btn-primary {
-    background-color: #4361ee;
-    border-color: #4361ee;
+    background-color: #245d78;
+    border-color: #245d78;
 }
 
 .btn-primary:hover {
-    background-color: #3a56d4;
-    border-color: #3a56d4;
+    background-color: #123344;
+    border-color: #123344;
 }
 
 .card-footer {
@@ -39,7 +39,7 @@ body {
 .spinner {
     border: 4px solid rgba(0, 0, 0, 0.1);
     border-radius: 50%;
-    border-top: 4px solid #4361ee;
+    border-top: 4px solid #245d78;
     width: 40px;
     height: 40px;
     margin: 0 auto 10px;
@@ -63,6 +63,7 @@ body {
 /* Live feed styles */
 .text-pulse {
     animation: pulse 1.5s infinite;
+    color: #245d78;
 }
 
 @keyframes pulse {
@@ -99,7 +100,7 @@ body {
     border-left: 3px solid transparent;
 }
 
-#log-output .log-entry.info { border-left-color: #4361ee; }
+#log-output .log-entry.info { border-left-color: #245d78; }
 #log-output .log-entry.warning { border-left-color: #ff9800; }
 #log-output .log-entry.error { border-left-color: #f44336; }
 #log-output .log-entry.success { border-left-color: #4caf50; }
