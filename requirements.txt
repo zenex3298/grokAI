@@ -5,3 +5,4 @@ beautifulsoup4==4.12.2
 lxml==4.9.3
 gunicorn==21.2.0
 pyppeteer==1.0.2
+redis==5.0.1
