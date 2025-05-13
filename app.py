@@ -128,7 +128,7 @@ def background_worker():
                         app.job_logs[job_id].append(log_entry)
                 
                 # Run vendor site scraping with callback
-                vendor_data = scrape_vendor_site(vendor_name, max_results=max_results, progress_callback=vendor_site_callback)
+                vendor_data = scrape_vendor_site(vendor_name, progress_callback=vendor_site_callback)
                 
                 # Update progress after vendor site scraping
                 app.job_results[job_id]['progress'] = {
