@@ -189,9 +189,32 @@
                                         <td>{{ result.customer_name }}</td>
                                         <td>
                                             {% if result.customer_url %}
-                                            <a href="{% if 'http' in result.customer_url %}{{ result.customer_url }}{% else %}https://{{ result.customer_url }}{% endif %}" target="_blank">{{ result.customer_url|truncate(100) }}</a>
+                                                {% set domain = result.customer_url %}
+                                                {% if result.validation and result.validation.structure_valid %}
+                                                    {% if result.validation.dns_valid %}
+                                                        <a href="{% if 'http' in result.customer_url %}{{ result.customer_url }}{% else %}https://{{ result.customer_url }}{% endif %}" target="_blank" class="text-success">
+                                                            {{ result.customer_url|truncate(100) }} 
+                                                            <span class="badge bg-success">✓ valid</span>
+                                                        </a>
+                                                    {% else %}
+                                                        <span title="Domain does not resolve" class="text-warning">
+                                                            {{ result.customer_url }} 
+                                                            <span class="badge bg-warning text-dark">⚠️ DNS error</span>
+                                                        </span>
+                                                    {% endif %}
+                                                {% elif '.' in domain and domain.split('.')[-1]|length >= 2 %}
+                                                    <a href="{% if 'http' in result.customer_url %}{{ result.customer_url }}{% else %}https://{{ result.customer_url }}{% endif %}" target="_blank" class="text-secondary">
+                                                        {{ result.customer_url|truncate(100) }}
+                                                        <span class="badge bg-secondary">not validated</span>
+                                                    </a>
+                                                {% else %}
+                                                    <span class="text-danger">
+                                                        {{ result.customer_url }} 
+                                                        <span class="badge bg-danger">invalid format</span>
+                                                    </span>
+                                                {% endif %}
                                             {% else %}
-                                            -
+                                            <span class="text-muted">No URL available</span>
                                             {% endif %}
                                         </td>
                                     </tr>
@@ -202,6 +225,20 @@
                         <div class="text-muted small mt-3">
                             <p><strong>Note:</strong> This data is derived from public information sources and may not be complete. 
                             Some customers may be inferred based on available information. URLs are estimated when not explicitly provided.</p>
+                            
+                            <div class="card mt-2">
+                                <div class="card-header">
+                                    <strong>URL Validation Status Explanation</strong>
+                                </div>
+                                <div class="card-body">
+                                    <ul class="list-unstyled">
+                                        <li><span class="badge bg-success">✓ valid</span> - URL is properly formatted and domain name resolves to a real website</li>
+                                        <li><span class="badge bg-warning text-dark">⚠️ DNS error</span> - URL is properly formatted but domain doesn't resolve (may be incorrect or typo)</li>
+                                        <li><span class="badge bg-secondary">not validated</span> - URL structure is valid but hasn't been DNS validated</li>
+                                        <li><span class="badge bg-danger">invalid format</span> - URL has an incorrect format</li>
+                                    </ul>
+                                </div>
+                            </div>
                         </div>
                         {% else %}
                         <div class="alert alert-warning">
@@ -521,9 +558,34 @@
                             <td>`;
                     
                     if (result.customer_url) {
-                        const url = result.customer_url.startsWith('http') ? result.customer_url : `https://${result.customer_url}`;
-                        const displayUrl = result.customer_url.length > 100 ? result.customer_url.substring(0, 97) + '...' : result.customer_url;
-                        tableHtml += `<a href="${url}" target="_blank">${displayUrl}</a>`;
+                        // Check if we have validation info from the backend
+                        if (result.validation && result.validation.structure_valid) {
+                            if (result.validation.dns_valid) {
+                                // URL with valid structure and DNS resolution - show as clickable link
+                                const url = result.customer_url.startsWith('http') ? result.customer_url : `https://${result.customer_url}`;
+                                const displayUrl = result.customer_url.length > 100 ? result.customer_url.substring(0, 97) + '...' : result.customer_url;
+                                tableHtml += `<a href="${url}" target="_blank">${displayUrl}</a>`;
+                            } else {
+                                // URL with valid structure but DNS doesn't resolve - show warning
+                                tableHtml += `<span title="Domain does not resolve">${result.customer_url} <span class="badge bg-warning text-dark">⚠️</span></span>`;
+                            }
+                        } else {
+                            // Fallback validation if no validation info from backend
+                            const urlDomain = result.customer_url.startsWith('http') ? 
+                                new URL(result.customer_url).hostname : result.customer_url;
+                            
+                            // Only simple validation - check URL has a valid TLD
+                            const hasTld = urlDomain.includes('.') && urlDomain.split('.').pop().length >= 2;
+                            
+                            if (hasTld) {
+                                const url = result.customer_url.startsWith('http') ? result.customer_url : `https://${result.customer_url}`;
+                                const displayUrl = result.customer_url.length > 100 ? result.customer_url.substring(0, 97) + '...' : result.customer_url;
+                                tableHtml += `<a href="${url}" target="_blank">${displayUrl}</a>`;
+                            } else {
+                                // Invalid URL - just display as text with badge
+                                tableHtml += `${result.customer_url} <span class="badge bg-danger">invalid</span>`;
+                            }
+                        }
                     } else {
                         tableHtml += `-`;
                     }

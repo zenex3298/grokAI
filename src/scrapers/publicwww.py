@@ -4,7 +4,8 @@ from bs4 import BeautifulSoup
 from urllib.parse import quote_plus
 
 from src.utils.logger import get_logger, LogComponent, set_context, log_data_metrics, log_function_call
-from src.analyzers.grok_analyzer import analyze_with_grok, cleanup_url
+from src.analyzers.grok_analyzer import analyze_with_grok
+from src.utils.url_validator import validate_url
 
 # Get a logger specifically for the PublicWWW component
 logger = get_logger(LogComponent.SCRAPER)
@@ -240,9 +241,10 @@ def scrape_publicwww(vendor_name, max_results=20, status_callback=None):
                     if not url:
                         # Generate a URL if one doesn't exist
                         url = f"https://{name.lower().replace(' ', '')}.com"
+                    validation_result = validate_url(url, validate_dns=False, validate_http=False)
                     unique_results[name.lower()] = {
                         'name': name,
-                        'url': cleanup_url(url),
+                        'url': validation_result.cleaned_url if validation_result.structure_valid else None,
                         'source': 'PublicWWW'
                     }
             

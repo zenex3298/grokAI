@@ -16,7 +16,7 @@ from src.scrapers.builtwith import scrape_builtwith
 from src.scrapers.publicwww import scrape_publicwww
 from src.utils.data_validator import validate_combined_data
 from src.utils.logger import setup_logging, get_logger, LogComponent, set_context
-from src.analyzers.grok_analyzer import cleanup_url
+from src.utils.url_validator import validate_url, log_validation_stats
 
 # Load environment variables
 load_dotenv()
@@ -861,19 +861,75 @@ def background_worker():
                 # Format the data for the results template
                 formatted_results = []
                 
+                # Track validation for logging
+                original_urls = []
+                validation_results = []
+                
+                # Get app logger
+                format_logger = get_logger(LogComponent.APP)
+                
                 for item in combined_data:
                     # Get the URL from the item
                     url = item.get('url', None)
                     
-                    # Skip items without a valid URL
-                    if not url:
-                        continue
+                    if url:
+                        original_urls.append(url)
                         
-                    formatted_results.append({
-                        'competitor': vendor_name,
-                        'customer_name': item.get('name', 'Unknown'),
-                        'customer_url': url
-                    })
+                        # First do basic structure validation (fast)
+                        validation_result = validate_url(url, validate_dns=False, validate_http=False)
+                        
+                        # Only do DNS validation if structure is valid
+                        if validation_result.structure_valid:
+                            # Now validate DNS to check if domain actually resolves
+                            dns_validation_result = validate_url(url, validate_dns=True, validate_http=False)
+                            validation_results.append(dns_validation_result)
+                            
+                            # Only add to formatted results if DNS validation passes
+                            if dns_validation_result.dns_valid:
+                                formatted_results.append({
+                                    'competitor': vendor_name,
+                                    'customer_name': item.get('name', 'Unknown'),
+                                    'customer_url': dns_validation_result.cleaned_url,
+                                    'validation': {
+                                        'structure_valid': dns_validation_result.structure_valid,
+                                        'dns_valid': dns_validation_result.dns_valid,
+                                        'http_valid': dns_validation_result.http_valid
+                                    }
+                                })
+                            else:
+                                # Log skipped URL due to DNS validation failure
+                                format_logger.info(f"Skipping URL due to DNS validation failure: {dns_validation_result.cleaned_url} for {item.get('name', 'Unknown')}")
+                        else:
+                            # Structure invalid, keep the original validation result
+                            validation_results.append(validation_result)
+                            # Don't include structure-invalid URLs in results
+                
+                # Log validation statistics
+                log_validation_stats(
+                    original_urls, 
+                    validation_results, 
+                    context={'stage': 'app_final_formatting', 'vendor': vendor_name}
+                )
+                
+                # Calculate validation stats for detailed logging
+                structure_invalid_count = sum(1 for r in validation_results if not r.structure_valid)
+                dns_invalid_count = sum(1 for r in validation_results if r.structure_valid and not r.dns_valid)
+                valid_count = sum(1 for r in validation_results if r.dns_valid)
+                
+                # Log how many URLs were filtered out in this final step
+                format_logger.info(f"URL validation summary: {valid_count} valid, {dns_invalid_count} DNS invalid, {structure_invalid_count} structure invalid")
+                format_logger.info(f"Filtered out {structure_invalid_count + dns_invalid_count} URLs that didn't pass validation checks")
+                
+                # Log ALL URLs being sent to frontend regardless of validation status
+                format_logger.info(f"ALL URLS being sent to frontend ({len(formatted_results)}):")
+                for i, result in enumerate(formatted_results):
+                    url = result.get('customer_url')
+                    name = result.get('customer_name', 'Unknown')
+                    validation_info = result.get('validation', {})
+                    structure_valid = validation_info.get('structure_valid', False)
+                    dns_valid = validation_info.get('dns_valid', False)
+                    http_valid = validation_info.get('http_valid', False)
+                    format_logger.info(f"  {i+1}. {name}: {url} [structure:{structure_valid}, dns:{dns_valid}, http:{http_valid}]")
                 
                 # Limit final results to the user-specified max_results if we have too many
                 if len(formatted_results) > max_results:
@@ -1068,19 +1124,26 @@ def generate_additional_suggestions(vendor_name, existing_results, count_needed)
                     if not domain:
                         domain = f"{suggestion.get('name', '').lower().replace(' ', '')}.com"
                     
-                    # Clean up the URL
-                    clean_url = cleanup_url(domain)
+                    # Validate URL structure
+                    validation_result = validate_url(domain, validate_dns=False, validate_http=False)
                     
-                    # Add to results
-                    additional_results.append({
-                        'competitor': vendor_name,
-                        'customer_name': suggestion.get('name', 'Unknown'),
-                        'customer_url': clean_url,
-                        'source': 'AI Generated'
-                    })
-                    
-                    # Add to existing names to avoid duplicates in future iterations
-                    existing_names.append(suggestion.get('name', '').lower())
+                    # Only add if URL structure is valid
+                    if validation_result.structure_valid:
+                        # Add to results
+                        additional_results.append({
+                            'competitor': vendor_name,
+                            'customer_name': suggestion.get('name', 'Unknown'),
+                            'customer_url': validation_result.cleaned_url,
+                            'source': 'AI Generated',
+                            'validation': {
+                                'structure_valid': validation_result.structure_valid,
+                                'dns_valid': validation_result.dns_valid,
+                                'http_valid': validation_result.http_valid
+                            }
+                        })
+                        
+                        # Add to existing names to avoid duplicates in future iterations
+                        existing_names.append(suggestion.get('name', '').lower())
                     
                     # Stop if we have enough
                     if len(additional_results) >= count_needed:
@@ -1112,15 +1175,25 @@ def generate_additional_suggestions(vendor_name, existing_results, count_needed)
                     # Generate URL
                     url = f"{name.lower().replace(' ', '')}.com"
                     
-                    suggestions.append({
-                        'competitor': vendor_name,
-                        'customer_name': name,
-                        'customer_url': cleanup_url(url),
-                        'source': 'AI Generated'
-                    })
+                    # Validate URL structure
+                    validation_result = validate_url(url, validate_dns=False, validate_http=False)
                     
-                    # Add to existing names to avoid duplicates
-                    existing_names.append(name.lower())
+                    # Only add if URL structure is valid
+                    if validation_result.structure_valid:
+                        suggestions.append({
+                            'competitor': vendor_name,
+                            'customer_name': name,
+                            'customer_url': validation_result.cleaned_url,
+                            'source': 'AI Generated',
+                            'validation': {
+                                'structure_valid': validation_result.structure_valid,
+                                'dns_valid': validation_result.dns_valid,
+                                'http_valid': validation_result.http_valid
+                            }
+                        })
+                        
+                        # Add to existing names to avoid duplicates
+                        existing_names.append(name.lower())
                     
                     # Stop if we have enough
                     if len(suggestions) >= count_needed:

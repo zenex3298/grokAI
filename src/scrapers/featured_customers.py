@@ -4,7 +4,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 
 from src.utils.logger import get_logger, LogComponent, set_context, log_data_metrics, log_function_call
-from src.analyzers.grok_analyzer import cleanup_url
+from src.utils.url_validator import validate_url
 
 # Get a logger specifically for the featured customers component
 logger = get_logger(LogComponent.FEATURED)
@@ -377,7 +377,8 @@ def scrape_featured_customers(vendor_name, max_results=20, status_callback=None)
                     if parent:
                         link = parent.find('a', href=True)
                         if link and 'http' in link['href']:
-                            url = cleanup_url(link['href'])  # Use the same cleanup as in other scraping
+                            validation_result = validate_url(link['href'], validate_dns=False, validate_http=False)
+                            url = validation_result.cleaned_url if validation_result.structure_valid else None  # Only use structure validation for performance
                             logger.debug(f"Found URL for customer {name}: {url}")
                     
                     customer_data.append({
@@ -442,7 +443,8 @@ def scrape_featured_customers(vendor_name, max_results=20, status_callback=None)
                         url = None
                         link = testimonial.find('a', href=True)
                         if link and 'http' in link['href']:
-                            url = cleanup_url(link['href'])
+                            validation_result = validate_url(link['href'], validate_dns=False, validate_http=False)
+                            url = validation_result.cleaned_url if validation_result.structure_valid else None  # Only use structure validation for performance
                         
                         customer_data.append({
                             'name': name,

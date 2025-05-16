@@ -16,7 +16,7 @@ from src.scrapers.builtwith import scrape_builtwith
 from src.scrapers.publicwww import scrape_publicwww
 from src.utils.data_validator import validate_combined_data
 from src.utils.logger import setup_logging, get_logger, LogComponent, set_context
-from src.analyzers.grok_analyzer import cleanup_url
+from src.utils.url_validator import validate_url, log_validation_stats
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -420,19 +420,60 @@ def process_vendor(job_id, vendor_name, max_results=20):
         # Format the data for the results template
         formatted_results = []
         
+        # Track validation for logging
+        original_urls = []
+        validation_results = []
+        
         for item in combined_data:
             # Get the URL from the item
             url = item.get('url', None)
             
-            # Skip items without a valid URL
-            if not url:
-                continue
+            if url:
+                original_urls.append(url)
+                # First do basic structure validation (fast)
+                validation_result = validate_url(url, validate_dns=False, validate_http=False)
                 
-            formatted_results.append({
-                'competitor': vendor_name,
-                'customer_name': item.get('name', 'Unknown'),
-                'customer_url': url
-            })
+                # Only do DNS validation if structure is valid
+                if validation_result.structure_valid:
+                    # Now validate DNS to check if domain actually resolves
+                    dns_validation_result = validate_url(url, validate_dns=True, validate_http=False)
+                    validation_results.append(dns_validation_result)
+                    
+                    # Only add to formatted results if DNS validation passes
+                    if dns_validation_result.dns_valid:
+                        formatted_results.append({
+                            'competitor': vendor_name,
+                            'customer_name': item.get('name', 'Unknown'),
+                            'customer_url': dns_validation_result.cleaned_url,
+                            'validation': {
+                                'structure_valid': dns_validation_result.structure_valid,
+                                'dns_valid': dns_validation_result.dns_valid,
+                                'http_valid': dns_validation_result.http_valid
+                            }
+                        })
+                    else:
+                        # Log skipped URL due to DNS validation failure
+                        worker_logger.info(f"Skipping URL due to DNS validation failure: {dns_validation_result.cleaned_url} for {item.get('name', 'Unknown')}")
+                else:
+                    # Structure invalid, keep the original validation result
+                    validation_results.append(validation_result)
+                    # Don't include structure-invalid URLs in results
+                
+        # Log validation statistics
+        log_validation_stats(
+            original_urls, 
+            validation_results, 
+            context={'stage': 'worker_final_formatting', 'vendor': vendor_name}
+        )
+        
+        # Calculate validation stats for detailed logging
+        structure_invalid_count = sum(1 for r in validation_results if not r.structure_valid)
+        dns_invalid_count = sum(1 for r in validation_results if r.structure_valid and not r.dns_valid)
+        valid_count = sum(1 for r in validation_results if r.dns_valid)
+        
+        # Log how many URLs were filtered out in this step
+        worker_logger.info(f"URL validation summary: {valid_count} valid, {dns_invalid_count} DNS invalid, {structure_invalid_count} structure invalid")
+        worker_logger.info(f"Filtered out {structure_invalid_count + dns_invalid_count} URLs that didn't pass validation checks")
         
         # Limit final results to the user-specified max_results if we have too many
         if len(formatted_results) > max_results:

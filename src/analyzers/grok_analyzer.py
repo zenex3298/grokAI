@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from datetime import datetime
 
 from src.utils.logger import get_logger, LogComponent, set_context, log_data_metrics, log_function_call
+from src.utils.url_validator import validate_url, log_validation_stats
 
 # Get a logger specifically for the analyzer component
 logger = get_logger(LogComponent.GROK)
@@ -42,32 +43,181 @@ def analyze_with_grok(data, vendor_name, progress_callback=None, max_results=20,
         # Initial basic processing to generate partial results
         partial_results = []
         
+        # Track invalid URLs for logging
+        invalid_urls_count = 0
+        
+        # Collect and validate all URLs in one pass
+        original_urls = []
+        validation_results = []
+        
         for i, item in enumerate(data):
-            # Create simplified version with just essential fields
-            simple_item = {
-                "name": item.get("name", ""),
-                "url": item.get("url", ""),
-                "source": item.get("source", "")
-            }
-            simplified_data.append(simple_item)
-            
-            # Every 10 items, update progress
-            if progress_callback and i > 0 and i % 10 == 0:
-                progress_percent = min(50, int((i / len(data)) * 50))  # Map to 0-50% range for data preparation
-                progress_callback(progress_percent, partial_results, f'Preparing data: {i}/{len(data)} items')
-            
-            # Add to partial results (with basic processing)
+            # Get item URL or generate one from name
             name = item.get("name", "").strip()
-            if name and name.lower() != vendor_name.lower():
-                url = cleanup_url(item.get("url", "") or f"{name.lower().replace(' ', '')}.com")
+            url = item.get("url", "")
+            
+            if not url and name and name.lower() != vendor_name.lower():
+                # Generate URL from name if none exists
+                url = f"{name.lower().replace(' ', '')}.com"
+            
+            if url:
+                original_urls.append(url)
+                # Validate URL structure only in first pass - much faster
+                result = validate_url(url, validate_dns=False, validate_http=False)
+                validation_results.append(result)
                 
-                # Simple deduplication by name
-                if not any(r['customer_name'].lower() == name.lower() for r in partial_results):
-                    partial_results.append({
-                        'competitor': vendor_name,
-                        'customer_name': name,
-                        'customer_url': url
-                    })
+                # Only include items with valid URL structure 
+                if result.structure_valid:
+                    # Create simplified version with just essential fields
+                    simple_item = {
+                        "name": item.get("name", ""),
+                        "url": result.cleaned_url,
+                        "source": item.get("source", "")
+                    }
+                    simplified_data.append(simple_item)
+                    
+                    # Add to partial results with deduplication
+                    if name and name.lower() != vendor_name.lower():
+                        if not any(r['customer_name'].lower() == name.lower() for r in partial_results):
+                            partial_results.append({
+                                'competitor': vendor_name,
+                                'customer_name': name,
+                                'customer_url': result.cleaned_url,
+                                'validation': {
+                                    'structure_valid': result.structure_valid,
+                                    'dns_valid': result.dns_valid,
+                                    'http_valid': result.http_valid
+                                }
+                            })
+            
+            # Update progress periodically
+            if progress_callback and i > 0 and i % 10 == 0:
+                progress_percent = min(30, int((i / len(data)) * 30))  # Map to 0-30% range for basic validation
+                progress_callback(progress_percent, partial_results, f'Validating data: {i}/{len(data)} items')
+        
+        # Log validation statistics for structure validation
+        log_validation_stats(
+            original_urls, 
+            validation_results, 
+            context={'stage': 'structure_validation', 'vendor': vendor_name}
+        )
+        
+        # Structure validation results
+        invalid_structure_count = sum(1 for r in validation_results if not r.structure_valid)
+        if invalid_structure_count > 0:
+            logger.info(f"Removed {invalid_structure_count} URLs with invalid structure")
+        
+        # Perform DNS validation on URLs that passed structure validation
+        if simplified_data:
+            # Update progress for DNS validation stage
+            if progress_callback:
+                progress_callback(30, partial_results, 'Validating URLs via DNS lookups')
+            
+            # Track validation results
+            dns_validation_results = []
+            dns_validated_data = []
+            dns_original_urls = []
+            
+            # Validate batches of URLs to avoid overwhelming DNS
+            batch_size = 10
+            for i in range(0, len(simplified_data), batch_size):
+                batch = simplified_data[i:i+batch_size]
+                
+                # Update progress for each batch
+                if progress_callback:
+                    progress_percent = 30 + min(10, int((i / len(simplified_data)) * 10))  # Map to 30-40% range
+                    progress_callback(progress_percent, partial_results, f'DNS validating: {i}/{len(simplified_data)}')
+                
+                # Validate each URL in the batch
+                for item in batch:
+                    url = item["url"]
+                    dns_original_urls.append(url)
+                    
+                    # DNS validation
+                    result = validate_url(url, validate_dns=True, validate_http=False)
+                    dns_validation_results.append(result)
+                    
+                    if result.dns_valid:
+                        dns_validated_data.append(item)
+            
+            # Log DNS validation statistics
+            log_validation_stats(
+                dns_original_urls, 
+                dns_validation_results, 
+                context={'stage': 'dns_validation', 'vendor': vendor_name}
+            )
+            
+            # DNS validation results  
+            dns_invalid_count = sum(1 for r in dns_validation_results if not r.dns_valid)
+            if dns_invalid_count > 0:
+                logger.info(f"DNS validation removed {dns_invalid_count} invalid URLs")
+            
+            # HTTP validation (optional, limited subset)
+            # This is most expensive, so only do it on a subset that passed DNS validation
+            if dns_validated_data and len(dns_validated_data) > 5:
+                # Update progress for HTTP validation stage
+                if progress_callback:
+                    progress_callback(40, partial_results, 'Validating URLs via HTTP requests')
+                
+                # Limit HTTP validation to reduce load
+                http_validation_limit = min(50, len(dns_validated_data))
+                http_validated_data = []
+                http_validation_results = []
+                http_original_urls = []
+                
+                # Process HTTP validation in small batches 
+                batch_size = 5
+                for i in range(0, http_validation_limit, batch_size):
+                    batch = dns_validated_data[i:i+batch_size]
+                    
+                    # Update progress for each batch
+                    if progress_callback:
+                        progress_percent = 40 + min(10, int((i / http_validation_limit) * 10))  # Map to 40-50% range
+                        progress_callback(progress_percent, partial_results, f'HTTP validating: {i}/{http_validation_limit}')
+                    
+                    # Validate each URL in the batch
+                    for item in batch:
+                        url = item["url"]
+                        http_original_urls.append(url)
+                        
+                        # HTTP validation
+                        result = validate_url(url, validate_dns=False, validate_http=True)
+                        http_validation_results.append(result)
+                        
+                        if result.http_valid:
+                            http_validated_data.append(item)
+                
+                # Log HTTP validation statistics
+                log_validation_stats(
+                    http_original_urls, 
+                    http_validation_results, 
+                    context={'stage': 'http_validation', 'vendor': vendor_name}
+                )
+                
+                # HTTP validation results
+                http_invalid_count = sum(1 for r in http_validation_results if not r.http_valid)
+                if http_invalid_count > 0:
+                    logger.info(f"HTTP validation removed {http_invalid_count} invalid URLs")
+                
+                # Use HTTP validated data if we have enough
+                if len(http_validated_data) >= 5:  
+                    logger.info(f"Using {len(http_validated_data)} HTTP-validated URLs for analysis")
+                    simplified_data = http_validated_data
+                else:
+                    # If too few URLs pass HTTP validation, fall back to DNS validation
+                    logger.warning(f"HTTP validation left only {len(http_validated_data)} valid URLs. Falling back to DNS validation.")
+                    simplified_data = dns_validated_data
+            else:
+                # If DNS validation left too few results, use structure-validated data
+                if len(dns_validated_data) < 5:
+                    logger.warning(f"DNS validation left only {len(dns_validated_data)} valid URLs. Using structure-validated URLs.")
+                else:
+                    logger.info(f"Using {len(dns_validated_data)} DNS-validated URLs for analysis")
+                    simplified_data = dns_validated_data
+        
+        # Log final validation status
+        logger.info(f"Total URLs after validation: {len(simplified_data)}")
+        if len(simplified_data) == 0:
+            logger.warning("No valid URLs to send to Grok for analysis")
         
         # Report partial results 
         if progress_callback:
@@ -238,6 +388,40 @@ def analyze_with_grok(data, vendor_name, progress_callback=None, max_results=20,
         # Log number of results
         logger.info(f"Returning {len(results)} results out of potentially more")
         
+        # Log ALL URLs analyzed by Grok regardless of whether they passed validation
+        validation_summary = {}
+        if results:
+            logger.info(f"Final list of {len(results)} validated URLs from Grok:")
+            for i, result in enumerate(results):
+                url = result.get('customer_url')
+                name = result.get('customer_name', 'Unknown')
+                validation_info = result.get('validation', {})
+                structure_valid = validation_info.get('structure_valid', False)
+                dns_valid = validation_info.get('dns_valid', False)
+                http_valid = validation_info.get('http_valid', False)
+                
+                # Track validation counts
+                validation_summary['total'] = validation_summary.get('total', 0) + 1
+                if structure_valid:
+                    validation_summary['structure_valid'] = validation_summary.get('structure_valid', 0) + 1
+                if dns_valid:
+                    validation_summary['dns_valid'] = validation_summary.get('dns_valid', 0) + 1
+                if http_valid:
+                    validation_summary['http_valid'] = validation_summary.get('http_valid', 0) + 1
+                    
+                logger.info(f"  {i+1}. {name}: {url} [structure:{structure_valid}, dns:{dns_valid}, http:{http_valid}]")
+        
+            # Log validation summary
+            total = validation_summary.get('total', 0)
+            structure_valid = validation_summary.get('structure_valid', 0)
+            dns_valid = validation_summary.get('dns_valid', 0)
+            http_valid = validation_summary.get('http_valid', 0)
+            
+            logger.info(f"Grok URL validation summary: {structure_valid}/{total} structure valid, "
+                        f"{dns_valid}/{total} DNS valid, {http_valid}/{total} HTTP valid")
+        else:
+            logger.warning("No URLs from Grok analysis")
+        
         # Final progress update with complete results
         if progress_callback:
             progress_callback('COMPLETE', results, f'Analysis complete! (Limited to {max_results} results)')
@@ -261,6 +445,10 @@ def parse_grok_response(text, vendor_name, max_results=5):
     """
     all_results = []
     
+    # Keep track of validation for logging
+    original_urls = []
+    validation_results = []
+    
     # First try to parse as JSON
     try:
         # Try to extract just the JSON part if there's any surrounding text
@@ -278,18 +466,46 @@ def parse_grok_response(text, vendor_name, max_results=5):
                     confidence = company.get('confidence', 0.7)  # Default confidence
                     
                     if confidence >= 0.6:  # Only include companies with sufficient confidence
-                        all_results.append({
-                            'competitor': vendor_name,
-                            'customer_name': name,
-                            'customer_url': f"{name.lower().replace(' ', '')}.com",
-                            'confidence': confidence,
-                            'reason': company.get('reason', 'Extracted by Grok')
-                        })
+                        # Generate URL from name or use provided URL
+                        url = None
+                        if 'url' in company and company['url']:
+                            url = company['url']
+                        else:
+                            url = f"{name.lower().replace(' ', '')}.com"
+                        
+                        if url:
+                            original_urls.append(url)
+                            # Only validate structure - we'll validate DNS later if needed
+                            validation_result = validate_url(url, validate_dns=False, validate_http=False)
+                            validation_results.append(validation_result)
+                            
+                            # Only include if URL structure is valid
+                            if validation_result.structure_valid:
+                                all_results.append({
+                                    'competitor': vendor_name,
+                                    'customer_name': name,
+                                    'customer_url': validation_result.cleaned_url,
+                                    'confidence': confidence,
+                                    'reason': company.get('reason', 'Extracted by Grok'),
+                                    'validation': {
+                                        'structure_valid': validation_result.structure_valid,
+                                        'dns_valid': validation_result.dns_valid,
+                                        'http_valid': validation_result.http_valid
+                                    }
+                                })
+            
+            # Log validation statistics
+            log_validation_stats(
+                original_urls, 
+                validation_results, 
+                context={'stage': 'grok_json_response', 'vendor': vendor_name}
+            )
             
             # If we successfully parsed JSON, sort by confidence and return top results
             if all_results:
                 # Sort by confidence (highest first)
                 all_results = sorted(all_results, key=lambda x: x.get('confidence', 0), reverse=True)
+                
                 # Limit to max_results
                 return all_results[:max_results]
     except:
@@ -299,6 +515,10 @@ def parse_grok_response(text, vendor_name, max_results=5):
     
     # If we get here, try the old line-by-line parsing method
     results = []
+    
+    # Reset validation tracking for line-by-line method
+    original_urls = []
+    validation_results = []
     
     # Split by new lines and process each line
     lines = text.strip().split('\n')
@@ -322,19 +542,36 @@ def parse_grok_response(text, vendor_name, max_results=5):
             else:
                 url = f"{customer_name.lower().replace(' ', '')}.com"
             
-            # Validate and cleanup URL
-            url = cleanup_url(url)
-            
-            results.append({
-                'competitor': vendor_name,
-                'customer_name': customer_name,
-                'customer_url': url
-            })
+            if url:
+                original_urls.append(url)
+                # Validate URL structure
+                validation_result = validate_url(url, validate_dns=False, validate_http=False)
+                validation_results.append(validation_result)
+                
+                # Only include if URL structure is valid
+                if validation_result.structure_valid:
+                    results.append({
+                        'competitor': vendor_name,
+                        'customer_name': customer_name,
+                        'customer_url': validation_result.cleaned_url,
+                        'validation': {
+                            'structure_valid': validation_result.structure_valid,
+                            'dns_valid': validation_result.dns_valid,
+                            'http_valid': validation_result.http_valid
+                        }
+                    })
             
             # Stop if we've reached the maximum number of results
             if len(results) >= max_results:
                 logger.info(f"Reached maximum of {max_results} results, truncating")
                 break
+    
+    # Log validation statistics for line-by-line parsing
+    log_validation_stats(
+        original_urls, 
+        validation_results, 
+        context={'stage': 'grok_line_parsing', 'vendor': vendor_name}
+    )
     
     return results
 
@@ -354,6 +591,10 @@ def process_data_without_grok(data, vendor_name, progress_callback=None, max_res
     # Basic de-duplication by customer name
     unique_customers = {}
     
+    # Track validation for logging
+    original_urls = []
+    validation_results = []
+    
     for item in data:
         name = item.get('name')
         if not name:
@@ -368,19 +609,41 @@ def process_data_without_grok(data, vendor_name, progress_callback=None, max_res
         if not url:
             url = f"{name.lower().replace(' ', '')}.com"
         
-        # Clean and validate URL
-        url = cleanup_url(url)
-        
-        # Add to unique customers (overwriting any previous entry with same name)
-        unique_customers[name] = url
+        if url:
+            # Track for validation stats
+            original_urls.append(url)
+            
+            # Validate URL with structure validation
+            validation_result = validate_url(url, validate_dns=False, validate_http=False)
+            validation_results.append(validation_result)
+            
+            # Only use if structure is valid
+            if validation_result.structure_valid:
+                # Add to unique customers (overwriting any previous entry with same name)
+                unique_customers[name] = {
+                    'url': validation_result.cleaned_url,
+                    'validation': {
+                        'structure_valid': validation_result.structure_valid,
+                        'dns_valid': validation_result.dns_valid,
+                        'http_valid': validation_result.http_valid
+                    }
+                }
+    
+    # Log validation statistics
+    log_validation_stats(
+        original_urls, 
+        validation_results, 
+        context={'stage': 'fallback_processing', 'vendor': vendor_name}
+    )
     
     # Format results
     results = []
-    for name, url in unique_customers.items():
+    for name, data in unique_customers.items():
         results.append({
             'competitor': vendor_name,
             'customer_name': name,
-            'customer_url': url
+            'customer_url': data['url'],
+            'validation': data['validation']
         })
     
     # Limit results
@@ -388,33 +651,31 @@ def process_data_without_grok(data, vendor_name, progress_callback=None, max_res
         logger.info(f"Limiting non-Grok results from {len(results)} to {max_results}")
         results = results[:max_results]
     
+    # Log the final URLs that will be sent to the frontend
+    if results:
+        logger.info(f"Final list of {len(results)} validated URLs being sent to frontend (fallback mode):")
+        for i, result in enumerate(results):
+            url = result.get('customer_url')
+            name = result.get('customer_name', 'Unknown')
+            logger.info(f"  {i+1}. {name}: https://{url}")
+    else:
+        logger.warning("No valid URLs to send to frontend (fallback mode)")
+    
     # Final progress update if callback provided
     if progress_callback:
         progress_callback('COMPLETE', results, f'Analysis complete! (Limited to {max_results} results)')
         
     return results
 
-def cleanup_url(url):
-    """Clean and validate URL."""
-    # If URL is empty or None, return None
-    if not url:
-        return None
-        
-    # Remove common prefixes if present
-    url = url.strip()
-    for prefix in ['http://', 'https://', 'www.']:
-        if url.startswith(prefix):
-            url = url[len(prefix):]
-    
-    # Remove path components and parameters
-    parsed = urlparse(f"https://{url}")
-    url = parsed.netloc
-    
-    # Ensure URL doesn't contain spaces or special characters
-    url = url.lower().replace(' ', '')
-    
-    # Validate URL has proper domain structure
-    if len(url) < 4 or '.' not in url:
-        return None
-    
-    return url
+# These functions have been replaced by src.utils.url_validator
+# They are kept as comments for reference in case needed
+
+# def validate_url_http(url, timeout=2):
+#     """Validate a URL by making a HEAD request to it."""
+#     # Now using the central URL validator 
+#     pass
+
+# def cleanup_url(url, validate_http=False):
+#     """Clean and validate URL."""
+#     # Now using the central URL validator
+#     pass
